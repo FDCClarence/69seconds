@@ -43,13 +43,23 @@ export const lootPublicStateSchema = z.object({
   available: z.boolean(),
 });
 
-export const gameSnapshotSchema = z.object({
-  sequence: z.number().int().nonnegative(),
-  room: roomPublicStateSchema,
-  loot: z.array(lootPublicStateSchema),
+export const snapshotPlayerStateSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  position: vector2Schema,
+  sprinting: z.boolean(),
+  acknowledgedInputSequence: z.number().int().min(-1),
 });
 
-export const clientInputSchema = z.object({
+export const gameSnapshotSchema = z.strictObject({
+  sequence: z.number().int().nonnegative(),
+  roomCode: roomCodeSchema,
+  phase: gamePhaseSchema,
+  serverTimeMs: z.number().int().nonnegative(),
+  phaseEndsAtMs: z.number().int().nonnegative().nullable(),
+  players: z.array(snapshotPlayerStateSchema).min(1).max(GAME.maxPlayers),
+});
+
+export const clientInputSchema = z.strictObject({
   sequence: z.number().int().nonnegative(),
   clientTimeMs: z.number().int().nonnegative(),
   movement: z.object({
@@ -164,6 +174,7 @@ export type Vector2 = z.infer<typeof vector2Schema>;
 export type PublicPlayerState = z.infer<typeof publicPlayerStateSchema>;
 export type RoomPublicState = z.infer<typeof roomPublicStateSchema>;
 export type LootPublicState = z.infer<typeof lootPublicStateSchema>;
+export type SnapshotPlayerState = z.infer<typeof snapshotPlayerStateSchema>;
 export type GameSnapshot = z.infer<typeof gameSnapshotSchema>;
 export type ClientInput = z.infer<typeof clientInputSchema>;
 export type InteractionRequest = z.infer<typeof interactionRequestSchema>;

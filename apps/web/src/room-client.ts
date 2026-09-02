@@ -1,9 +1,13 @@
 import {
   roomClosedSchema,
+  gameSnapshotSchema,
   roomCommandResultSchema,
   roomPublicStateSchema,
   serverErrorSchema,
   type ClientToServerEvents,
+  type ClientInput,
+  type GameSnapshot,
+  type MovementInput,
   type RoomClosed,
   type RoomPublicState,
   type ServerError,
@@ -30,6 +34,8 @@ export interface RoomClient {
   leaveRoom(): Promise<RoomPublicState | null>;
   setReady(ready: boolean): Promise<RoomPublicState>;
   startMatch(): Promise<RoomPublicState>;
+  sendInput?(movement: MovementInput, sprint: boolean): ClientInput | null;
+  subscribeSnapshots?(listener: (snapshot: GameSnapshot) => void): () => void;
 }
 
 export class RoomClientError extends Error {
@@ -57,9 +63,14 @@ export function createRoomClient(): RoomClient {
 class SocketRoomClient implements RoomClient {
   private readonly listeners = new Set<RoomClientListeners>();
   private connectionState: SocketConnectionState = 'DISCONNECTED';
+  private readonly snapshotListeners = new Set<(snapshot: GameSnapshot) => void>();
+  private nextInputSequence = 0;
 
   constructor(private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>) {
-    socket.on('connect', () => this.publishConnection('CONNECTED'));
+    socket.on('connect', () => {
+      this.nextInputSequence = 0;
+      this.publishConnection('CONNECTED');
+    });
     socket.on('disconnect', (reason) => {
       this.publishConnection(reason === 'io client disconnect' ? 'DISCONNECTED' : 'RECONNECTING');
     });
@@ -81,6 +92,14 @@ class SocketRoomClient implements RoomClient {
       const parsed = roomClosedSchema.safeParse(payload);
       if (!parsed.success) return;
       for (const listener of this.listeners) listener.onClosed(parsed.data);
+    });
+    socket.on('state:snapshot', (payload) => {
+      const parsed = gameSnapshotSchema.safeParse(payload);
+      if (!parsed.success) {
+        this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received invalid game snapshot', retryable: true });
+        return;
+      }
+      for (const listener of this.snapshotListeners) listener(parsed.data);
     });
   }
 
@@ -134,6 +153,23 @@ class SocketRoomClient implements RoomClient {
     return this.requiredRoom(await this.emitCommand((acknowledge) => {
       this.socket.emit('lobby:start', {}, acknowledge);
     }));
+  }
+
+  sendInput(movement: MovementInput, sprint: boolean): ClientInput | null {
+    if (!this.socket.connected) return null;
+    const input: ClientInput = {
+      sequence: this.nextInputSequence++,
+      clientTimeMs: Date.now(),
+      movement,
+      sprint,
+    };
+    this.socket.emit('input:update', input);
+    return input;
+  }
+
+  subscribeSnapshots(listener: (snapshot: GameSnapshot) => void): () => void {
+    this.snapshotListeners.add(listener);
+    return () => this.snapshotListeners.delete(listener);
   }
 
   private ensureConnected(): Promise<void> {

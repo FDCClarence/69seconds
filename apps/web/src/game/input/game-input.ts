@@ -14,6 +14,7 @@ interface GameplayKeys {
 }
 
 export interface InputFrame {
+  movement: MovementInput;
   velocity: Vector2;
   sprinting: boolean;
 }
@@ -46,7 +47,7 @@ export class GameInput {
       right: this.keys.right.isDown,
     };
     const sprinting = this.keys.sprint.isDown;
-    return { velocity: movementVelocity(movement, sprinting), sprinting };
+    return { movement, velocity: movementVelocity(movement, sprinting), sprinting };
   }
 
   readAction(): DebugAction | 'INTERACT' | null {

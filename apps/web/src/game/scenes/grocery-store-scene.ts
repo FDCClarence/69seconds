@@ -1,5 +1,7 @@
 import Phaser from 'phaser';
 import {
+  NETWORK,
+  PLAYER_SPAWN_POSITIONS,
   createLocalLootState,
   lootCatalogEntry,
   resolveLootCommand,
@@ -8,12 +10,15 @@ import {
   type LootCatalogId,
   type LootCommand,
   type LootCommandResult,
+  simulatePlayerMovement,
+  type ClientInput,
+  type GamePhase,
 } from '@69-seconds/shared';
 import { PlayerEntity } from '../entities/player-entity.js';
 import { GameInput } from '../input/game-input.js';
+import { RemoteInterpolationBuffer } from '../network/interpolation.js';
 import {
   GENERATED_GROCERY_STORE_MAP,
-  STORE_COLLISION_LAYER,
   STORE_OBJECT_LAYER,
   STORE_VISUAL_LAYERS,
   type StoreCart,
@@ -34,20 +39,33 @@ export class GroceryStoreScene extends Phaser.Scene {
   private promptText?: Phaser.GameObjects.Text;
   private lootState?: LocalLootState;
   private readonly lootObjects = new Map<string, Phaser.GameObjects.Container>();
+  private readonly remotePlayers = new Map<string, PlayerEntity>();
+  private readonly remoteBuffers = new Map<string, RemoteInterpolationBuffer>();
+  private pendingInputs: ClientInput[] = [];
+  private phase: GamePhase;
+  private fixedAccumulatorMs = 0;
+  private lastSnapshotSequence = -1;
+  private serverClockOffsetMs = 0;
+  private unsubscribeSnapshots: (() => void) | undefined;
 
   constructor(callbacks: GroceryGameCallbacks) {
     super('grocery-store-test');
     this.callbacks = callbacks;
+    this.phase = callbacks.initialPhase ?? 'COUNTDOWN';
   }
 
   create(): void {
     this.physics.world.setBounds(0, 0, MAP_WIDTH, MAP_HEIGHT);
     this.cameras.main.setBounds(0, 0, MAP_WIDTH, MAP_HEIGHT);
     this.drawStore();
-    const obstacles = this.physics.add.staticGroup();
-    for (const shelf of STORE_COLLISION_LAYER) obstacles.create(shelf.x, shelf.y, SHELF_TEXTURE).setVisible(false);
-    this.player = new PlayerEntity(this, STORE_OBJECT_LAYER.playerSpawn.x, STORE_OBJECT_LAYER.playerSpawn.y);
-    this.physics.add.collider(this.player, obstacles);
+    const localState = this.callbacks.initialPlayers?.find((player) => player.id === this.callbacks.localPlayerId);
+    const fallbackSpawn = PLAYER_SPAWN_POSITIONS[this.callbacks.assignedCartSlot ?? 0]
+      ?? STORE_OBJECT_LAYER.playerSpawn;
+    const initialPosition = localState?.position.x || localState?.position.y ? localState.position : fallbackSpawn;
+    this.player = new PlayerEntity(this, initialPosition.x, initialPosition.y);
+    for (const state of this.callbacks.initialPlayers ?? []) {
+      if (state.id !== this.callbacks.localPlayerId) this.ensureRemotePlayer(state.id, state.position.x, state.position.y);
+    }
     this.controls = new GameInput(this);
     this.resetLoot(false);
     this.cameras.main.startFollow(this.player, false, 0.1, 0.1);
@@ -66,23 +84,101 @@ export class GroceryStoreScene extends Phaser.Scene {
     const inputTarget = this.game.canvas.parentElement;
     window.addEventListener('blur', resetInput);
     inputTarget?.addEventListener('game-input-blur', resetInput);
+    this.unsubscribeSnapshots = this.callbacks.subscribeSnapshots?.((snapshot) => {
+      if (!this.callbacks.roomCode || snapshot.roomCode === this.callbacks.roomCode) this.applySnapshot(snapshot);
+    });
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       window.removeEventListener('blur', resetInput);
       inputTarget?.removeEventListener('game-input-blur', resetInput);
       this.scale.off(Phaser.Scale.Events.RESIZE, this.resizeCamera, this);
+      this.unsubscribeSnapshots?.();
     });
     this.callbacks.onReady?.();
   }
 
-  override update(): void {
+  override update(_time: number, deltaMs: number): void {
     if (!this.player || !this.controls) return;
     const frame = this.controls.read();
+    this.fixedAccumulatorMs = Math.min(this.fixedAccumulatorMs + deltaMs, 250);
+    const fixedStepMs = 1_000 / NETWORK.simulationTickRateHz;
+    while (this.fixedAccumulatorMs >= fixedStepMs) {
+      this.fixedAccumulatorMs -= fixedStepMs;
+      const input = this.callbacks.sendInput?.(frame.movement, frame.sprinting) ?? null;
+      if (input) {
+        this.pendingInputs.push(input);
+        if (this.pendingInputs.length > NETWORK.maxInputRateHz * 4) this.pendingInputs.shift();
+      }
+      if (this.phase === 'LOOTING') {
+        const next = simulatePlayerMovement(
+          { x: this.player.x, y: this.player.y },
+          frame.movement,
+          frame.sprinting,
+          1 / NETWORK.simulationTickRateHz,
+        );
+        this.player.setPosition(next.x, next.y);
+      }
+    }
     this.player.move(frame.velocity, frame.sprinting);
+    this.interpolateRemotePlayers();
     const action = this.controls.readAction();
-    if (action === 'INTERACT') this.interact();
-    if (action === 'SHOVE') this.showFeedback({ kind: 'SHOVE_DEBUG', message: 'CTRL · shove remains a local debug hook' });
-    if (this.controls.readDebugReset()) this.resetLoot(true);
+    if (this.phase === 'LOOTING' && action === 'INTERACT') this.interact();
+    if (this.phase === 'LOOTING' && action === 'SHOVE') {
+      this.showFeedback({ kind: 'SHOVE_DEBUG', message: 'CTRL · shove remains a local debug hook' });
+    }
+    if (this.phase === 'LOOTING' && this.controls.readDebugReset()) this.resetLoot(true);
     this.updateInteractionPrompt();
+  }
+
+  private applySnapshot(snapshot: import('@69-seconds/shared').GameSnapshot): void {
+    if (!this.player || snapshot.sequence <= this.lastSnapshotSequence) return;
+    this.lastSnapshotSequence = snapshot.sequence;
+    this.serverClockOffsetMs = snapshot.serverTimeMs - Date.now();
+    if (this.phase !== snapshot.phase) {
+      this.phase = snapshot.phase;
+      this.callbacks.onPhaseChange?.(snapshot.phase);
+    }
+    const local = snapshot.players.find((player) => player.id === this.callbacks.localPlayerId);
+    if (local) {
+      this.pendingInputs = this.pendingInputs.filter(
+        (input) => input.sequence > local.acknowledgedInputSequence,
+      );
+      let reconciled = { ...local.position };
+      if (snapshot.phase === 'LOOTING') {
+        for (const input of this.pendingInputs) {
+          reconciled = simulatePlayerMovement(
+            reconciled,
+            input.movement,
+            input.sprint,
+            1 / NETWORK.simulationTickRateHz,
+          );
+        }
+      }
+      this.player.setPosition(reconciled.x, reconciled.y);
+    }
+    for (const remote of snapshot.players) {
+      if (remote.id === this.callbacks.localPlayerId) continue;
+      this.ensureRemotePlayer(remote.id, remote.position.x, remote.position.y);
+      this.remoteBuffers.get(remote.id)?.push(snapshot.serverTimeMs, remote.position);
+    }
+  }
+
+  private ensureRemotePlayer(playerId: string, x: number, y: number): void {
+    if (this.remotePlayers.has(playerId)) return;
+    const remote = new PlayerEntity(this, x, y).setAlpha(0.82);
+    remote.setData('playerId', playerId);
+    this.remotePlayers.set(playerId, remote);
+    this.remoteBuffers.set(playerId, new RemoteInterpolationBuffer());
+  }
+
+  private interpolateRemotePlayers(): void {
+    const renderServerTimeMs = Date.now() + this.serverClockOffsetMs - NETWORK.interpolationDelayMs;
+    for (const [playerId, remote] of this.remotePlayers) {
+      const position = this.remoteBuffers.get(playerId)?.sample(renderServerTimeMs);
+      if (!position) continue;
+      const velocity = { x: position.x - remote.x, y: position.y - remote.y };
+      remote.setPosition(position.x, position.y);
+      remote.move(velocity, false);
+    }
   }
 
   private interact(): void {

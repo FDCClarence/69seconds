@@ -39,7 +39,8 @@ export class PlayerEntity extends Phaser.Physics.Arcade.Sprite {
   }
 
   move(velocity: Vector2, sprinting: boolean): void {
-    this.setVelocity(velocity.x, velocity.y);
+    // Position is driven by shared fixed-step prediction/interpolation, not Arcade integration.
+    this.setVelocity(0, 0);
     this.facing = facingFromVelocity(velocity, this.facing);
     this.currentAnimation = animationState(velocity, sprinting, this.facing);
     this.setData('animationState', this.currentAnimation);

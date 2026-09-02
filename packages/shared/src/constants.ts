@@ -9,11 +9,15 @@ export const GAME = {
   walkSpeedPixelsPerSecond: 150,
   sprintSpeedPixelsPerSecond: 235,
   playerCollisionRadiusPixels: 15,
+  mapWidthPixels: 1_800,
+  mapHeightPixels: 1_200,
 } as const;
 
 export const ROOM_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 export const NETWORK = {
+  simulationTickRateHz: 30,
   snapshotRateHz: 20,
   maxInputRateHz: 30,
+  interpolationDelayMs: 100,
 } as const;

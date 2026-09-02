@@ -15,12 +15,14 @@ import {
   type ServerError,
   type ServerToClientEvents,
   type SocketData,
+  NETWORK,
 } from '@69-seconds/shared';
 import type { Server as HttpServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
 import type { ZodType } from 'zod';
 import { readSessionTokenFromCookieHeader, type SessionCookieConfig } from './auth/cookies.js';
 import type { AuthService } from './auth/service.js';
+import { AuthoritativeRoomSimulation } from './game/simulation.js';
 import { RoomRegistry, RoomRegistryError, type RoomRegistryOptions } from './rooms/registry.js';
 
 type GameServer = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
@@ -80,13 +82,35 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
   const io: GameServer = new Server(httpServer, {
     cors: { origin: options.webOrigins, credentials: true },
   });
+  const simulations = new Map<string, AuthoritativeRoomSimulation>();
   const rooms = new RoomRegistry({
     ...options.rooms,
     onEvent(event) {
-      if (event.type === 'state') io.to(event.room.code).emit('lobby:state', event.room);
-      else io.to(event.room.code).emit('room:closed', event.room);
+      if (event.type === 'state') {
+        simulations.get(event.room.code)?.synchronizePlayers(event.room);
+        io.to(event.room.code).emit('lobby:state', event.room);
+      } else {
+        simulations.delete(event.room.code);
+        io.to(event.room.code).emit('room:closed', event.room);
+      }
     },
   });
+  const simulationTimer = setInterval(() => {
+    const serverNowMs = Date.now();
+    for (const simulation of simulations.values()) {
+      const result = simulation.tick(serverNowMs);
+      if (!result.snapshotDue && !result.phaseChanged) continue;
+      const snapshot = simulation.snapshot(serverNowMs);
+      const room = rooms.applySimulationSnapshot(snapshot);
+      if (!room) {
+        simulations.delete(simulation.roomCode);
+        continue;
+      }
+      io.to(simulation.roomCode).emit('state:snapshot', snapshot);
+      if (result.phaseChanged) io.to(simulation.roomCode).emit('lobby:state', room);
+    }
+  }, 1_000 / NETWORK.simulationTickRateHz);
+  simulationTimer.unref?.();
 
   io.use(async (socket, next) => {
     const token = readSessionTokenFromCookieHeader(socket.handshake.headers.cookie, options.cookie);
@@ -128,6 +152,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
 
     const recovered = rooms.reconnect(identity, socket.id);
     if (recovered) {
+      simulations.get(recovered.code)?.resetInput(playerId, true);
       socket.data.roomCode = recovered.code;
       void Promise.resolve(socket.join(recovered.code))
         .then(() => io.to(recovered.code).emit('lobby:state', recovered))
@@ -175,6 +200,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       const code = rooms.roomForPlayer(playerId);
       try {
         const room = rooms.leave(playerId);
+        if (code) simulations.get(code)?.removePlayer(playerId);
         if (code) {
           for (const connectedSocket of io.sockets.sockets.values()) {
             if (connectedSocket.data.playerId !== playerId) continue;
@@ -211,7 +237,10 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       }
       try {
         const room = rooms.start(playerId);
+        const simulation = new AuthoritativeRoomSimulation(room);
+        simulations.set(room.code, simulation);
         io.to(room.code).emit('lobby:state', room);
+        io.to(room.code).emit('state:snapshot', simulation.snapshot(Date.now()));
         reply(acknowledge, roomCommandResultSchema.parse({ ok: true, room }));
       } catch (error) {
         reply(acknowledge, commandFailure(error, 'lobby:start'));
@@ -219,8 +248,14 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     });
 
     socket.on('input:update', (payload) => {
-      if (!isValid(clientInputSchema, payload)) reportInvalidGameplayPayload(socket, 'input:update');
-      // Valid input will enter the authoritative simulation in a later build step.
+      const parsed = clientInputSchema.safeParse(payload);
+      if (!parsed.success) {
+        reportInvalidGameplayPayload(socket, 'input:update');
+        return;
+      }
+      const code = rooms.roomForPlayer(playerId);
+      if (!code) return;
+      simulations.get(code)?.submitInput(playerId, parsed.data);
     });
 
     socket.on('interaction:request', (payload) => {
@@ -232,6 +267,8 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     });
 
     socket.on('disconnect', () => {
+      const code = rooms.roomForPlayer(playerId);
+      if (code) simulations.get(code)?.resetInput(playerId, true);
       const room = rooms.disconnect(playerId, socket.id);
       if (room) io.to(room.code).emit('lobby:state', room);
     });
@@ -241,6 +278,8 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     io,
     rooms,
     async close() {
+      clearInterval(simulationTimer);
+      simulations.clear();
       rooms.close();
       await new Promise<void>((resolve) => io.close(() => resolve()));
     },

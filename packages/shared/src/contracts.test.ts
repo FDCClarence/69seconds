@@ -15,22 +15,16 @@ describe('shared contracts', () => {
   it('accepts a valid authoritative snapshot', () => {
     const snapshot = gameSnapshotSchema.parse({
       sequence: 1,
-      room: {
-        code: 'ABC234',
-        phase: 'LOBBY',
-        hostPlayerId: 'player-1',
-        players: [{
-          id: 'player-1', displayName: 'Clerk', slot: 0, isHost: true,
-          isReady: false, isConnected: true, position: { x: 0, y: 0 },
-          connectionState: 'CONNECTED',
-          carriedItemIds: [], depositedItemIds: [],
-        }],
-        serverTimeMs: 1_000,
-        phaseEndsAtMs: null,
-      },
-      loot: [],
+      roomCode: 'ABC234',
+      phase: 'LOBBY',
+      serverTimeMs: 1_000,
+      phaseEndsAtMs: null,
+      players: [{
+        id: 'player-1', position: { x: 900, y: 600 }, sprinting: false,
+        acknowledgedInputSequence: 4,
+      }],
     });
-    expect(snapshot.room.phase).toBe('LOBBY');
+    expect(snapshot.phase).toBe('LOBBY');
   });
 
   it('normalizes readable room codes and validates typed command results', () => {
@@ -50,6 +44,13 @@ describe('shared contracts', () => {
 
   it('rejects contradictory movement payload shapes', () => {
     expect(() => clientInputSchema.parse({ sequence: 1 })).toThrow();
+    expect(() => clientInputSchema.parse({
+      sequence: 1,
+      clientTimeMs: 1,
+      movement: { up: false, down: false, left: false, right: true },
+      sprint: false,
+      position: { x: 999_999, y: 999_999 },
+    })).toThrow();
   });
 
   it('enforces carry capacity and normalized movement', () => {

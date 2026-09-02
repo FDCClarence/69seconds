@@ -1,4 +1,9 @@
-import { type CartId, type LootSpawnPoint } from '@69-seconds/shared';
+import {
+  GAME,
+  GROCERY_STORE_COLLISION,
+  type CartId,
+  type LootSpawnPoint,
+} from '@69-seconds/shared';
 
 /**
  * Generated placeholder map, deliberately kept as declarative layer data until
@@ -24,8 +29,8 @@ export interface StoreVisualShelf extends StoreRectangle {
   tint: number;
 }
 
-const mapWidth = 1_800;
-const mapHeight = 1_200;
+const mapWidth = GAME.mapWidthPixels;
+const mapHeight = GAME.mapHeightPixels;
 
 const shelfLayout = [
   [300, 260], [600, 260], [1_200, 260], [1_500, 260],
@@ -47,13 +52,7 @@ export const STORE_VISUAL_LAYERS = {
 } as const;
 
 /** The invisible collision-object layer; its rectangles are independent bodies. */
-export const STORE_COLLISION_LAYER = shelfLayout.map(([x, y], index): StoreRectangle => ({
-  id: `shelf-collision-${index + 1}`,
-  x,
-  y,
-  width: 260,
-  height: 72,
-}));
+export const STORE_COLLISION_LAYER: readonly StoreRectangle[] = GROCERY_STORE_COLLISION;
 
 export const STORE_OBJECT_LAYER = {
   playerSpawn: { id: 'spawn-central', x: 900, y: 600 },

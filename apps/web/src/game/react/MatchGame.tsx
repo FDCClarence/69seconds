@@ -1,18 +1,19 @@
-import { GAME, type GamePhase } from '@69-seconds/shared';
+import { GAME, type RoomPublicState } from '@69-seconds/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CarryHudState, GameFeedback, GroceryGameFactory } from '../types.js';
 import { mountGroceryGame } from './game-lifecycle.js';
+import type { RoomClient } from '../../room-client.js';
 
 export function MatchGame({
-  phase,
-  roomCode,
-  assignedCartSlot,
+  room,
+  localPlayerId,
+  roomClient,
   onLeave,
   gameFactory,
 }: {
-  phase: GamePhase;
-  roomCode: string;
-  assignedCartSlot: number;
+  room: RoomPublicState;
+  localPlayerId: string;
+  roomClient: RoomClient;
   onLeave: () => Promise<void>;
   gameFactory: GroceryGameFactory | undefined;
 }) {
@@ -20,6 +21,9 @@ export function MatchGame({
   const [ready, setReady] = useState(false);
   const [feedback, setFeedback] = useState<GameFeedback | null>(null);
   const [inventory, setInventory] = useState<CarryHudState>({ carriedItems: [], depositedCount: 0 });
+  const [displayPhase, setDisplayPhase] = useState(room.phase);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const initialRoom = useRef(room);
   const actionTimer = useRef<number | undefined>(undefined);
 
   const showFeedback = useCallback((nextFeedback: GameFeedback) => {
@@ -30,6 +34,19 @@ export function MatchGame({
   const showAction = useCallback(() => {
     showFeedback({ kind: 'SHOVE_DEBUG', message: 'SHOVE DEBUG HOOK' });
   }, [showFeedback]);
+
+  useEffect(() => setDisplayPhase(room.phase), [room.phase]);
+  useEffect(() => {
+    if (displayPhase !== 'COUNTDOWN' || room.phaseEndsAtMs === null) {
+      setCountdown(null);
+      return undefined;
+    }
+    const serverOffsetMs = room.serverTimeMs - Date.now();
+    const refresh = () => setCountdown(Math.max(0, Math.ceil((room.phaseEndsAtMs! - (Date.now() + serverOffsetMs)) / 1_000)));
+    refresh();
+    const timer = window.setInterval(refresh, 100);
+    return () => window.clearInterval(timer);
+  }, [displayPhase, room.phaseEndsAtMs, room.serverTimeMs]);
 
   useEffect(() => {
     const parent = gameHost.current;
@@ -46,7 +63,14 @@ export function MatchGame({
         onFeedback: showFeedback,
         onInventoryChange: setInventory,
         onReady: () => setReady(true),
-        assignedCartSlot,
+        assignedCartSlot: initialRoom.current.players.find((player) => player.id === localPlayerId)?.slot ?? 0,
+        localPlayerId,
+        roomCode: initialRoom.current.code,
+        initialPhase: initialRoom.current.phase,
+        initialPlayers: initialRoom.current.players,
+        sendInput: (movement, sprint) => roomClient.sendInput?.(movement, sprint) ?? null,
+        subscribeSnapshots: (listener) => roomClient.subscribeSnapshots?.(listener) ?? (() => undefined),
+        onPhaseChange: setDisplayPhase,
       });
     })();
     return () => {
@@ -54,7 +78,7 @@ export function MatchGame({
       window.clearTimeout(actionTimer.current);
       cleanup?.();
     };
-  }, [assignedCartSlot, gameFactory, showAction, showFeedback]);
+  }, [gameFactory, localPlayerId, roomClient, showAction, showFeedback]);
 
   return <main className="game-route">
     <div
@@ -68,9 +92,9 @@ export function MatchGame({
     />
     <section className="game-hud" aria-label="Gameplay controls and carry slots">
       <div className="game-hud-topline">
-        <div><span className="hud-label">Room</span><strong>{roomCode}</strong></div>
-        <div className={`hud-status ${ready ? 'is-ready' : ''}`}><i />{ready ? 'Local prototype' : 'Loading scene'}</div>
-        <div><span className="hud-label">Server phase</span><strong>{phase}</strong></div>
+        <div><span className="hud-label">Room</span><strong>{room.code}</strong></div>
+        <div className={`hud-status ${ready ? 'is-ready' : ''}`}><i />{ready ? 'Network synchronized' : 'Loading scene'}</div>
+        <div><span className="hud-label">Server phase</span><strong>{displayPhase}</strong></div>
       </div>
       <div className="game-controls" aria-label="Controls">
         <span><kbd>WASD</kbd> move</span><span><kbd>Shift</kbd> sprint</span>
@@ -86,6 +110,9 @@ export function MatchGame({
       </ol><span className="deposit-count" aria-label={`${inventory.depositedCount} items deposited`}>Cart {inventory.depositedCount}</span></div>
       <button type="button" className="hud-leave" onClick={() => void onLeave()}>Leave test</button>
     </section>
+    {displayPhase === 'COUNTDOWN' && <div className="countdown-overlay" role="timer" aria-label="Match countdown">
+      <span>Get ready</span><strong>{countdown ?? '…'}</strong>
+    </div>}
     <div className={`game-action-indicator ${feedback ? 'is-visible' : ''}`} role="status" aria-live="polite">
       {feedback?.message ?? ''}
     </div>

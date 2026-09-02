@@ -181,6 +181,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
       room={room?.code === code ? room : null}
       user={auth.user}
       connection={connection}
+      roomClient={rooms}
       onJoin={joinRoom}
       onReady={async (ready) => { setRoom(await rooms.setReady(ready)); }}
       onStart={async () => { setRoom(await rooms.startMatch()); }}
@@ -425,11 +426,12 @@ function Home({ user, notice, onLogout, onCreate, onJoin }: {
   </main>;
 }
 
-function Lobby({ code, room, user, connection, onJoin, onReady, onStart, onLeave, onLogout, gameFactory }: {
+function Lobby({ code, room, user, connection, roomClient, onJoin, onReady, onStart, onLeave, onLogout, gameFactory }: {
   code: string;
   room: RoomPublicState | null;
   user: PublicUser;
   connection: SocketConnectionState;
+  roomClient: RoomClient;
   onJoin: (code: string) => Promise<void>;
   onReady: (ready: boolean) => Promise<void>;
   onStart: () => Promise<void>;
@@ -468,9 +470,9 @@ function Lobby({ code, room, user, connection, onJoin, onReady, onStart, onLeave
   const self = room.players.find((player) => player.id === user.id);
   if (room.phase !== 'LOBBY') {
     return <MatchGame
-      phase={room.phase}
-      roomCode={room.code}
-      assignedCartSlot={self?.slot ?? 0}
+      room={room}
+      localPlayerId={user.id}
+      roomClient={roomClient}
       onLeave={onLeave}
       gameFactory={gameFactory}
     />;

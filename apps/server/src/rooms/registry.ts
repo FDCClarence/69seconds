@@ -1,5 +1,6 @@
 import {
   GAME,
+  PLAYER_SPAWN_POSITIONS,
   ROOM_CODE_ALPHABET,
   roomPublicStateSchema,
   serverErrorSchema,
@@ -8,6 +9,7 @@ import {
   type RoomPublicState,
   type ServerError,
   type ServerErrorCode,
+  type GameSnapshot,
 } from '@69-seconds/shared';
 import { randomInt } from 'node:crypto';
 
@@ -21,6 +23,7 @@ interface RoomPlayer extends AuthenticatedRoomPlayer {
   displayName: string;
   slot: number;
   isReady: boolean;
+  position: { x: number; y: number };
   socketIds: Set<string>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
 }
@@ -176,6 +179,11 @@ export class RoomRegistry {
     }
     room.phase = 'COUNTDOWN';
     room.phaseEndsAtMs = this.now() + GAME.countdownDurationMs;
+    for (const player of room.players.values()) {
+      const spawn = PLAYER_SPAWN_POSITIONS[player.slot];
+      if (!spawn) throw new Error(`Missing spawn for player slot ${player.slot}`);
+      player.position = { ...spawn };
+    }
     room.lastActivityAtMs = this.now();
     return this.publicState(room);
   }
@@ -209,6 +217,19 @@ export class RoomRegistry {
 
   roomForPlayer(playerId: string): string | undefined {
     return this.playerRooms.get(playerId);
+  }
+
+  applySimulationSnapshot(snapshot: GameSnapshot): RoomPublicState | null {
+    const room = this.rooms.get(snapshot.roomCode);
+    if (!room) return null;
+    room.phase = snapshot.phase;
+    room.phaseEndsAtMs = snapshot.phaseEndsAtMs;
+    for (const state of snapshot.players) {
+      const player = room.players.get(state.id);
+      if (player) player.position = { ...state.position };
+    }
+    room.lastActivityAtMs = this.now();
+    return this.publicState(room);
   }
 
   get size(): number {
@@ -289,6 +310,7 @@ export class RoomRegistry {
       displayName: player.username,
       slot,
       isReady: false,
+      position: { x: 0, y: 0 },
       socketIds: new Set([socketId]),
     };
   }
@@ -327,7 +349,7 @@ export class RoomRegistry {
           isReady: player.isReady,
           isConnected: player.socketIds.size > 0,
           connectionState: player.socketIds.size > 0 ? 'CONNECTED' : 'RECONNECTING',
-          position: { x: 0, y: 0 },
+          position: player.position,
           carriedItemIds: [],
           depositedItemIds: [],
         })),
