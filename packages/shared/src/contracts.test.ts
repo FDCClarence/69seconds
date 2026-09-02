@@ -64,6 +64,21 @@ describe('shared contracts', () => {
       password: 'a-long-password',
     });
     expect(registration).toMatchObject({ username: 'cart_goblin', email: 'player@example.com' });
+    expect(registerRequestSchema.parse({
+      username: 'easy',
+      email: 'easy@example.com',
+      password: 'password',
+    })).toMatchObject({ username: 'easy', password: 'password' });
+    expect(() => registerRequestSchema.parse({
+      username: 'abc',
+      email: 'player@example.com',
+      password: 'password',
+    })).toThrow();
+    expect(() => registerRequestSchema.parse({
+      username: 'player',
+      email: 'player@example.com',
+      password: 'short',
+    })).toThrow();
     expect(() => registerRequestSchema.parse({
       username: 'no spaces',
       email: 'player@example.com',

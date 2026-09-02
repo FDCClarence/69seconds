@@ -124,10 +124,10 @@ export const healthResponseSchema = z.object({
 
 export const emailSchema = z.string().trim().toLowerCase().email().max(254);
 
-export const passwordSchema = z.string().min(12).max(128);
+export const passwordSchema = z.string().min(8).max(128);
 
 // Usernames are lowercased on the way in so uniqueness never depends on the database collation.
-export const usernameSchema = z.string().trim().toLowerCase().min(3).max(24).regex(/^[a-z0-9_]+$/);
+export const usernameSchema = z.string().trim().toLowerCase().min(4).max(24).regex(/^[a-z0-9_]+$/);
 
 export const registerRequestSchema = z.strictObject({
   username: usernameSchema,

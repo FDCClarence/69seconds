@@ -35,11 +35,11 @@ function fieldErrors(mode: FormMode, values: { username: string; email: string; 
   const errors: Record<string, string> = {};
   if (mode === 'register') {
     if (!values.username.trim()) errors.username = 'Choose a username.';
-    else if (!/^[a-zA-Z0-9_]{3,24}$/.test(values.username.trim())) errors.username = 'Use 3–24 letters, numbers, or underscores.';
+    else if (!/^[a-zA-Z0-9_]{4,24}$/.test(values.username.trim())) errors.username = 'Use 4–24 letters, numbers, or underscores.';
     if (!values.email.trim()) errors.email = 'Enter your email address.';
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email.trim())) errors.email = 'Enter a valid email address.';
     if (!values.password) errors.password = 'Enter a password.';
-    else if (values.password.length < 12) errors.password = 'Use at least 12 characters.';
+    else if (values.password.length < 8) errors.password = 'Use at least 8 characters.';
     return errors;
   }
   if (!values.identifier.trim()) errors.identifier = 'Enter your username or email.';
