@@ -90,6 +90,7 @@ export class GroceryStoreScene extends Phaser.Scene {
   private lastSprintTrailAt = 0;
   private bindings: InputBindings;
   private readonly unsubscribes: (() => void)[] = [];
+  private stopped = false;
 
   constructor(callbacks: GroceryGameCallbacks) {
     super('grocery-store-test');
@@ -99,6 +100,7 @@ export class GroceryStoreScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.stopped = false;
     this.physics.world.setBounds(0, 0, MAP_WIDTH, MAP_HEIGHT);
     this.cameras.main.setBounds(0, 0, MAP_WIDTH, MAP_HEIGHT);
     this.drawStore();
@@ -154,6 +156,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     }));
     this.publishSprint();
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.stopped = true;
       window.removeEventListener('blur', resetInput);
       inputTarget?.removeEventListener('game-input-blur', resetInput);
       this.scale.off(Phaser.Scale.Events.RESIZE, this.resizeCamera, this);
@@ -260,6 +263,15 @@ export class GroceryStoreScene extends Phaser.Scene {
       this.ensureRemotePlayer(remote.id, remote.position.x, remote.position.y);
       this.remoteBuffers.get(remote.id)?.push(snapshot.serverTimeMs, remote.position);
     }
+    const activeRemoteIds = new Set(snapshot.players
+      .filter((remote) => remote.id !== this.callbacks.localPlayerId)
+      .map((remote) => remote.id));
+    for (const [playerId, remote] of this.remotePlayers) {
+      if (activeRemoteIds.has(playerId)) continue;
+      remote.destroy();
+      this.remotePlayers.delete(playerId);
+      this.remoteBuffers.delete(playerId);
+    }
   }
 
   private ensureRemotePlayer(playerId: string, x: number, y: number, displayName?: string): void {
@@ -309,11 +321,13 @@ export class GroceryStoreScene extends Phaser.Scene {
     this.awaitingInteraction = true;
     try {
       const result = await this.callbacks.requestInteraction(request);
+      if (this.stopped) return;
       this.lootView = applyInteractionResult(this.lootView, result);
       this.refreshLootVisibility();
       this.publishInventory();
       this.showFeedback(this.feedbackFor(result));
     } catch {
+      if (this.stopped) return;
       // No acknowledgement: discard the prediction rather than showing loot we may not hold.
       this.lootView = rollbackPickup(this.lootView, request.requestId);
       this.refreshLootVisibility();
@@ -352,17 +366,19 @@ export class GroceryStoreScene extends Phaser.Scene {
     this.awaitingShove = true;
     try {
       const result = await this.callbacks.requestShove(request);
+      if (this.stopped) return;
       this.shoveCooldownEndsAtServerMs = result.cooldownEndsAtMs;
       this.showFeedback(result.outcome === 'LANDED'
         ? { kind: 'SHOVE_LANDED', message: 'Shove landed' }
         : { kind: result.reason, message: result.message });
     } catch {
+      if (this.stopped) return;
       // No acknowledgement: clear the predicted cooldown rather than locking the key.
       this.shoveCooldownEndsAtServerMs = 0;
       this.showFeedback({ kind: 'DESYNCHRONIZED', message: 'The server did not confirm that shove' });
     } finally {
       this.awaitingShove = false;
-      this.publishSprint();
+      if (!this.stopped) this.publishSprint();
     }
   }
 

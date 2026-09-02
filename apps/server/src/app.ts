@@ -23,7 +23,18 @@ export function createApp(options: AppOptions) {
     response.json(body);
   });
 
-  app.use('/api/auth', createAuthRouter({
+  app.use('/api/auth', (request, response, next) => {
+    response.setHeader('Cache-Control', 'no-store');
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+      const origin = request.get('origin');
+      const fetchSite = request.get('sec-fetch-site');
+      if ((origin && !options.config.webOrigins.includes(origin)) || fetchSite === 'cross-site') {
+        sendApiError(response, 403, 'FORBIDDEN', 'Request origin is not allowed');
+        return;
+      }
+    }
+    next();
+  }, createAuthRouter({
     auth: options.auth,
     cookie: options.config.cookie,
     rateLimit: options.config.authRateLimit,
@@ -35,10 +46,20 @@ export function createApp(options: AppOptions) {
       sendApiError(response, 400, 'INVALID_PAYLOAD', 'Request body must be valid JSON');
       return;
     }
+    if (isPayloadTooLarge(error)) {
+      sendApiError(response, 413, 'INVALID_PAYLOAD', 'Request body is too large');
+      return;
+    }
     console.error(error);
     sendApiError(response, 500, 'INTERNAL_ERROR', 'An unexpected error occurred', true);
   };
   app.use(errorHandler);
 
   return app;
+}
+
+function isPayloadTooLarge(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as { status?: unknown; type?: unknown };
+  return candidate.status === 413 || candidate.type === 'entity.too.large';
 }

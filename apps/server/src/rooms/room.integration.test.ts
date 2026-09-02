@@ -1,5 +1,6 @@
 import {
   GAME,
+  NETWORK,
   type ClientToServerEvents,
   type GameSnapshot,
   type InteractionResult,
@@ -180,6 +181,37 @@ describe('authenticated Socket.IO room lifecycle', () => {
       socket.connect();
     });
     expect(error.data?.code).toBe('UNAUTHENTICATED');
+    expect(socket.connected).toBe(false);
+  });
+
+  it('bounds authenticated event floods and emits only one rate-limit warning per second', async () => {
+    const socket = await connect(0);
+    const errors: string[] = [];
+    socket.on('game:error', (error) => errors.push(error.code));
+    for (let sequence = 0; sequence < NETWORK.socketEventBurstCapacity; sequence += 1) {
+      socket.emit('input:update', {
+        sequence,
+        clientTimeMs: sequence,
+        movement: { up: false, down: false, left: false, right: true },
+        sprint: false,
+      });
+    }
+
+    const limited = await command(socket, 'room:create', {});
+    expect(limited).toMatchObject({ ok: false, error: { code: 'RATE_LIMITED' } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(errors).toEqual(['RATE_LIMITED']);
+    expect(sockets.rooms.size).toBe(0);
+  });
+
+  it('disconnects a client whose Socket.IO message exceeds the transport limit', async () => {
+    const socket = await connect(0);
+    const disconnected = new Promise<void>((resolve) => socket.once('disconnect', () => resolve()));
+    (socket.emit as unknown as (event: string, payload: unknown) => void)(
+      'room:join',
+      { code: 'A'.repeat(NETWORK.maxPayloadBytes + 1) },
+    );
+    await disconnected;
     expect(socket.connected).toBe(false);
   });
 

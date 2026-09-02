@@ -51,6 +51,8 @@ interface SimulatedPlayer {
   queuedInputs: ClientInput[];
   lastReceivedSequence: number;
   acknowledgedInputSequence: number;
+  /** Server receipt time; null is used only by deterministic tests that omit a clock. */
+  lastInputReceivedAtMs: number | null;
 }
 
 interface MatchParticipant {
@@ -106,6 +108,7 @@ export class AuthoritativeRoomSimulation {
         queuedInputs: [],
         lastReceivedSequence: -1,
         acknowledgedInputSequence: -1,
+        lastInputReceivedAtMs: null,
       });
     }
     this.loot = new MatchLootAuthority(room.code, room.players, lootOptions);
@@ -125,6 +128,7 @@ export class AuthoritativeRoomSimulation {
       && serverNowMs >= this.phaseEndsAtMs
     ) return false;
     player.lastReceivedSequence = input.sequence;
+    player.lastInputReceivedAtMs = serverNowMs ?? null;
     // Socket.IO preserves order. The cap bounds malicious backlog without increasing movement per tick.
     if (player.queuedInputs.length >= NETWORK.maxInputRateHz) player.queuedInputs.shift();
     player.queuedInputs.push(input);
@@ -141,6 +145,7 @@ export class AuthoritativeRoomSimulation {
     player.queuedInputs = [];
     player.currentInput = this.idleInput(-1);
     player.sprinting = false;
+    player.lastInputReceivedAtMs = null;
     if (resetSequence) {
       player.lastReceivedSequence = -1;
       player.acknowledgedInputSequence = -1;
@@ -254,6 +259,14 @@ export class AuthoritativeRoomSimulation {
     const movementAllowed = this.phase === 'LOOTING'
       && (this.phaseEndsAtMs === null || serverNowMs < this.phaseEndsAtMs);
     for (const player of this.players.values()) {
+      const inputExpired = player.lastInputReceivedAtMs !== null
+        && serverNowMs - player.lastInputReceivedAtMs >= NETWORK.inputIdleTimeoutMs;
+      if (inputExpired) {
+        player.queuedInputs = [];
+        player.currentInput = this.idleInput(-1);
+        player.sprinting = false;
+        player.lastInputReceivedAtMs = null;
+      }
       // Inputs keep being consumed and acknowledged while recovering, so a shoved
       // client's reconciliation never stalls and no backlog builds up behind it.
       const nextInput = player.queuedInputs.shift();

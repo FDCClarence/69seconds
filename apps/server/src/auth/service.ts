@@ -1,5 +1,5 @@
 import { hash, verify } from '@node-rs/argon2';
-import { and, eq, gt, or } from 'drizzle-orm';
+import { and, eq, gt, lte, or } from 'drizzle-orm';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Database } from '../db/client.js';
 import { sessions, users, type UserRow } from '../db/schema.js';
@@ -98,10 +98,14 @@ export class AuthService {
 
   private async createSession(
     userId: string,
-    database: Pick<Database, 'insert'> = this.db,
+    database: Pick<Database, 'delete' | 'insert'> = this.db,
   ): Promise<CreatedSession> {
     const token = randomBytes(32).toString('base64url');
-    const expiresAt = new Date(this.now().getTime() + this.sessionTtlMs);
+    const currentTime = this.now();
+    const expiresAt = new Date(currentTime.getTime() + this.sessionTtlMs);
+    // Opportunistic indexed cleanup keeps expired sessions from accumulating
+    // without adding a process timer or a second deployment component.
+    await database.delete(sessions).where(lte(sessions.expiresAt, currentTime));
     await database.insert(sessions).values({
       tokenHash: digestToken(token),
       userId,

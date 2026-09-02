@@ -20,6 +20,13 @@ export const NETWORK = {
   snapshotRateHz: 20,
   maxInputRateHz: 30,
   interpolationDelayMs: 100,
+  /** Stop a held direction if fresh input stops arriving before transport disconnect detection. */
+  inputIdleTimeoutMs: 250,
+  /** Socket.IO rejects a single decoded message above this limit before event validation. */
+  maxPayloadBytes: 16 * 1024,
+  /** Per-socket token bucket protecting every inbound event, including malformed events. */
+  socketEventBurstCapacity: 120,
+  socketEventRefillPerSecond: 60,
 } as const;
 
 /**

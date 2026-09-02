@@ -8,6 +8,10 @@ export const createGroceryGame: GroceryGameFactory = (parent, callbacks) => new 
   parent,
   backgroundColor: '#132126',
   banner: false,
+  // Audio is owned by game-audio.ts. Leaving Phaser audio enabled creates a
+  // second AudioContext whose delayed visibility callback can race teardown
+  // and try to suspend/resume an already closed context in SPA navigation.
+  audio: { noAudio: true },
   scene: new GroceryStoreScene(callbacks),
   physics: {
     default: 'arcade',

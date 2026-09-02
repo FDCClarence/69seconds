@@ -345,7 +345,7 @@ function AuthLanding({ api, restoreError, onRetry, onAuthenticated }: {
                 onBlur={() => markTouched('email')} error={showError('email')} autoComplete="email" />
               <Field label="Password" id="password" type="password" value={password} onChange={setPassword}
                 onBlur={() => markTouched('password')} error={showError('password')} autoComplete="new-password"
-                hint="At least 12 characters." />
+                hint="At least 8 characters." />
             </> : <>
               <Field label="Username or email" id="identifier" type="text" value={identifier} onChange={setIdentifier}
                 onBlur={() => markTouched('identifier')} error={showError('identifier')} autoComplete="username" />

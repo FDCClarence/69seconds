@@ -19,11 +19,20 @@ httpServer.listen(config.port, () => {
   console.log(`69 Seconds server listening on http://localhost:${config.port}`);
 });
 
-async function shutdown(): Promise<void> {
-  await sockets.close();
-  await database.pool.end();
-  process.exit(0);
+let shutdownStarted = false;
+async function shutdown(signal: NodeJS.Signals): Promise<void> {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  console.log(`Received ${signal}; closing realtime connections and database pool`);
+  try {
+    await sockets.close();
+    await database.pool.end();
+    console.log('Server shutdown complete');
+  } catch (error) {
+    console.error('Server shutdown failed', error);
+    process.exitCode = 1;
+  }
 }
 
-process.on('SIGINT', () => { void shutdown(); });
-process.on('SIGTERM', () => { void shutdown(); });
+process.once('SIGINT', () => { void shutdown('SIGINT'); });
+process.once('SIGTERM', () => { void shutdown('SIGTERM'); });

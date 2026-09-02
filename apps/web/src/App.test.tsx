@@ -98,6 +98,7 @@ describe('authentication application', () => {
     const register = vi.fn().mockResolvedValue(player);
     renderAt('/', apiStub({ register }));
     await userEvent.click(await screen.findByRole('tab', { name: 'Register' }));
+    expect(screen.getByText('At least 8 characters.')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Create account' }));
     expect(screen.getByText('Choose a username.')).toBeTruthy();
     expect(screen.getByText('Enter your email address.')).toBeTruthy();

@@ -153,6 +153,19 @@ describe('authoritative movement simulation', () => {
     expect(simulation.submitInput('player-0', input(0))).toBe(true);
   });
 
+  it('stops stale held movement before transport disconnect detection', () => {
+    const simulation = new AuthoritativeRoomSimulation(room());
+    simulation.submitInput('player-0', input(0), 2_000);
+    simulation.tick(2_000);
+    const moved = playerIn(simulation, 2_000, 'player-0').position.x;
+
+    simulation.tick(2_000 + NETWORK.inputIdleTimeoutMs);
+    expect(playerIn(simulation, 2_000 + NETWORK.inputIdleTimeoutMs, 'player-0')).toMatchObject({
+      position: { x: moved },
+      sprinting: false,
+    });
+  });
+
   it('validates interactions against the position the simulation itself owns', () => {
     const simulation = new AuthoritativeRoomSimulation(room());
     const near = { requestId: '00000000-0000-4000-8000-000000000001', action: 'PICK_UP' as const, targetId: 'loot-eggs' };

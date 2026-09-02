@@ -135,6 +135,7 @@ function requestIdFrom(payload: unknown): string {
 export function attachSocketServer(httpServer: HttpServer, options: SocketServerOptions): SocketServerHandle {
   const io: GameServer = new Server(httpServer, {
     cors: { origin: options.webOrigins, credentials: true },
+    maxHttpBufferSize: NETWORK.maxPayloadBytes,
   });
   const simulations = new Map<string, AuthoritativeRoomSimulation>();
   const now = options.rooms?.now ?? Date.now;
@@ -189,7 +190,9 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
         simulations.delete(simulation.roomCode);
         continue;
       }
-      io.to(simulation.roomCode).emit('state:snapshot', snapshot);
+      // Superseded movement snapshots have no value to a slow client. Volatile
+      // delivery prevents latency from turning into an unbounded reliable queue.
+      io.to(simulation.roomCode).volatile.emit('state:snapshot', snapshot);
       if (result.phaseChanged) io.to(simulation.roomCode).emit('lobby:state', room);
       if (result.tallyCommitted) {
         const tally = simulation.tally();
@@ -236,6 +239,44 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       return;
     }
     const identity = { id: playerId, username: playerUsername, email: playerEmail };
+
+    let eventTokens: number = NETWORK.socketEventBurstCapacity;
+    let eventTokensRefilledAtMs = now();
+    let lastRateLimitNoticeAtMs = Number.NEGATIVE_INFINITY;
+    socket.use((packet, next) => {
+      const serverNowMs = now();
+      const elapsedSeconds = Math.max(0, (serverNowMs - eventTokensRefilledAtMs) / 1_000);
+      eventTokens = Math.min(
+        NETWORK.socketEventBurstCapacity,
+        eventTokens + elapsedSeconds * NETWORK.socketEventRefillPerSecond,
+      );
+      eventTokensRefilledAtMs = serverNowMs;
+      if (eventTokens >= 1) {
+        eventTokens -= 1;
+        next();
+        return;
+      }
+
+      const [event, payload, possibleAcknowledge] = packet as unknown as [string, unknown, unknown];
+      const acknowledge = typeof possibleAcknowledge === 'function'
+        ? possibleAcknowledge as (result: unknown) => void
+        : undefined;
+      if (event === 'interaction:request') {
+        acknowledge?.(interactionRejection(requestIdFrom(payload), 'RATE_LIMITED'));
+      } else if (event === 'shove:request') {
+        acknowledge?.(shoveRejection(requestIdFrom(payload), 'RATE_LIMITED'));
+      } else if (event !== 'input:update') {
+        acknowledge?.(roomCommandResultSchema.parse({
+          ok: false,
+          error: publicError('RATE_LIMITED', 'Too many realtime requests', event, true),
+        }));
+      }
+      // At most one warning per second, so rejection itself cannot amplify a flood.
+      if (serverNowMs - lastRateLimitNoticeAtMs >= 1_000) {
+        lastRateLimitNoticeAtMs = serverNowMs;
+        socket.emit('game:error', publicError('RATE_LIMITED', 'Too many realtime requests', event, true));
+      }
+    });
 
     const recovered = rooms.reconnect(identity, socket.id);
     if (recovered) {
