@@ -44,6 +44,7 @@ export type RoomRegistryEvent =
 export interface RoomRegistryOptions {
   reconnectGraceMs?: number;
   abandonedRoomTtlMs?: number;
+  countdownDurationMs?: number;
   now?: () => number;
   onEvent?: (event: RoomRegistryEvent) => void;
 }
@@ -73,6 +74,7 @@ export class RoomRegistry {
   private readonly playerRooms = new Map<string, string>();
   private readonly reconnectGraceMs: number;
   private readonly abandonedRoomTtlMs: number;
+  private readonly countdownDurationMs: number;
   private readonly now: () => number;
   private readonly onEvent: (event: RoomRegistryEvent) => void;
   private readonly cleanupTimer: ReturnType<typeof setInterval>;
@@ -80,6 +82,7 @@ export class RoomRegistry {
   constructor(options: RoomRegistryOptions = {}) {
     this.reconnectGraceMs = options.reconnectGraceMs ?? GAME.reconnectGraceMs;
     this.abandonedRoomTtlMs = options.abandonedRoomTtlMs ?? GAME.abandonedRoomTtlMs;
+    this.countdownDurationMs = options.countdownDurationMs ?? GAME.countdownDurationMs;
     this.now = options.now ?? Date.now;
     this.onEvent = options.onEvent ?? (() => undefined);
     const cleanupEveryMs = Math.max(50, Math.min(60_000, Math.floor(this.abandonedRoomTtlMs / 2)));
@@ -178,7 +181,7 @@ export class RoomRegistry {
       );
     }
     room.phase = 'COUNTDOWN';
-    room.phaseEndsAtMs = this.now() + GAME.countdownDurationMs;
+    room.phaseEndsAtMs = this.now() + this.countdownDurationMs;
     for (const player of room.players.values()) {
       const spawn = PLAYER_SPAWN_POSITIONS[player.slot];
       if (!spawn) throw new Error(`Missing spawn for player slot ${player.slot}`);
@@ -350,8 +353,6 @@ export class RoomRegistry {
           isConnected: player.socketIds.size > 0,
           connectionState: player.socketIds.size > 0 ? 'CONNECTED' : 'RECONNECTING',
           position: player.position,
-          carriedItemIds: [],
-          depositedItemIds: [],
         })),
       serverTimeMs: this.now(),
       phaseEndsAtMs: room.phaseEndsAtMs,

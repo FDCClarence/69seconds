@@ -103,6 +103,9 @@ fieldset { display: flex; flex-direction: column; gap: 1rem; min-width: 0; margi
 .carry-hud li { width: 2.5rem; aspect-ratio: 1; position: relative; display: grid; place-items: center; border: 2px dashed #768b82; color: #91a39b; background: rgba(8, 18, 20, .55); }
 .carry-hud li span { position: absolute; top: .18rem; left: .25rem; font-size: .52rem; }
 .carry-hud li.is-filled { border-style: solid; border-color: #f6ca61; color: #172126; }
+/* A predicted pickup, dimmed until the server acknowledges it. */
+.carry-hud li.is-pending { border-color: #d2ec74; border-style: dashed; }
+.carry-hud li.is-pending b { opacity: .55; }
 .carry-hud li b { min-width: 1.75rem; padding: .2rem .1rem; color: #172126; font-size: .55rem; text-align: center; }
 .deposit-count { color: #d2ec74; font-size: .62rem; white-space: nowrap; }
 .hud-leave { align-self: stretch; pointer-events: auto; border: 1px solid #d77b5f; padding: .45rem .75rem; color: #fff3e9; background: rgba(85, 42, 35, .92); font: inherit; font-size: .68rem; font-weight: 700; text-transform: uppercase; }

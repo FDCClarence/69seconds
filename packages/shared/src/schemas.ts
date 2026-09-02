@@ -23,8 +23,6 @@ export const publicPlayerStateSchema = z.object({
   isConnected: z.boolean(),
   connectionState: playerConnectionStateSchema,
   position: vector2Schema,
-  carriedItemIds: z.array(z.string().min(1)).max(GAME.maxCarriedItems),
-  depositedItemIds: z.array(z.string().min(1)),
 });
 
 export const roomPublicStateSchema = z.object({
@@ -36,12 +34,73 @@ export const roomPublicStateSchema = z.object({
   phaseEndsAtMs: z.number().int().nonnegative().nullable(),
 });
 
-export const lootPublicStateSchema = z.object({
-  id: z.string().min(1),
-  kind: z.string().min(1).max(64),
+const itemIdSchema = z.string().min(1).max(64);
+const playerIdSchema = z.string().min(1).max(128);
+export const cartIdSchema = z.string().regex(new RegExp(`^cart-[0-${GAME.maxPlayers - 1}]$`));
+
+export const lootItemPublicStateSchema = z.strictObject({
+  id: itemIdSchema,
+  catalogId: z.string().min(1).max(64),
   position: vector2Schema,
   available: z.boolean(),
 });
+
+/** Cart contents are public: everyone can see what a physical cart holds. */
+export const cartPublicStateSchema = z.strictObject({
+  id: cartIdSchema,
+  slot: z.number().int().min(0).max(GAME.maxPlayers - 1),
+  ownerPlayerId: playerIdSchema.nullable(),
+  itemIds: z.array(itemIdSchema),
+});
+
+/** Only the count of another player's carried items is public, never its contents. */
+export const carriedCountSchema = z.strictObject({
+  playerId: playerIdSchema,
+  count: z.number().int().min(0).max(GAME.maxCarriedItems),
+});
+
+/**
+ * Addressed to a single socket, because `carriedItemIds` is that recipient's own
+ * private inventory. Sent on match start and after a reconnection.
+ */
+export const lootSyncSchema = z.strictObject({
+  sequence: z.number().int().nonnegative(),
+  roomCode: roomCodeSchema,
+  items: z.array(lootItemPublicStateSchema).max(256),
+  carts: z.array(cartPublicStateSchema).max(GAME.maxPlayers),
+  carriedCounts: z.array(carriedCountSchema).max(GAME.maxPlayers),
+  carriedItemIds: z.array(itemIdSchema).max(GAME.maxCarriedItems),
+});
+
+/** Compact committed change broadcast to the room; it carries no private inventory. */
+export const lootUpdateSchema = z.discriminatedUnion('type', [
+  z.strictObject({
+    type: z.literal('PICKED_UP'),
+    sequence: z.number().int().nonnegative(),
+    roomCode: roomCodeSchema,
+    playerId: playerIdSchema,
+    itemId: itemIdSchema,
+    carriedCount: z.number().int().min(0).max(GAME.maxCarriedItems),
+  }),
+  z.strictObject({
+    type: z.literal('DEPOSITED'),
+    sequence: z.number().int().nonnegative(),
+    roomCode: roomCodeSchema,
+    playerId: playerIdSchema,
+    cartId: cartIdSchema,
+    itemIds: z.array(itemIdSchema).min(1).max(GAME.maxCarriedItems),
+    cartItemCount: z.number().int().nonnegative(),
+    carriedCount: z.number().int().min(0).max(GAME.maxCarriedItems),
+  }),
+  z.strictObject({
+    type: z.literal('RESTOCKED'),
+    sequence: z.number().int().nonnegative(),
+    roomCode: roomCodeSchema,
+    playerId: playerIdSchema,
+    itemIds: z.array(itemIdSchema).min(1).max(GAME.maxCarriedItems),
+    carriedCount: z.literal(0),
+  }),
+]);
 
 export const snapshotPlayerStateSchema = z.strictObject({
   id: z.string().min(1).max(128),
@@ -73,11 +132,60 @@ export const clientInputSchema = z.strictObject({
 
 const requestIdSchema = z.string().uuid();
 
-export const interactionRequestSchema = z.object({
+/**
+ * Strict on purpose: a modified client cannot smuggle a claimed outcome, a
+ * position, or an inventory alongside its intent. `targetId` is optional so
+ * `INTERACT` can ask the server to choose the nearest valid target itself.
+ */
+export const interactionRequestSchema = z.strictObject({
   requestId: requestIdSchema,
-  targetId: z.string().min(1).max(128),
   action: z.enum(['INTERACT', 'PICK_UP', 'DROP_OFF']),
+  targetId: z.string().min(1).max(128).optional(),
 });
+
+export const interactionRejectionReasonSchema = z.enum([
+  'INVALID_PAYLOAD',
+  'NOT_IN_MATCH',
+  'INVALID_PHASE',
+  'NO_NEARBY_TARGET',
+  'OUT_OF_RANGE',
+  'NO_LINE_OF_ACCESS',
+  'UNKNOWN_TARGET',
+  'ITEM_UNAVAILABLE',
+  'HANDS_FULL',
+  'NOT_YOUR_CART',
+  'NOTHING_CARRIED',
+  'RATE_LIMITED',
+]);
+
+/**
+ * Every acknowledgement restates the requester's authoritative carried item IDs,
+ * so an optimistic client can confirm or roll back from the ack alone.
+ */
+export const interactionResultSchema = z.discriminatedUnion('outcome', [
+  z.strictObject({
+    outcome: z.literal('PICKED_UP'),
+    requestId: requestIdSchema,
+    itemId: itemIdSchema,
+    catalogId: z.string().min(1).max(64),
+    carriedItemIds: z.array(itemIdSchema).max(GAME.maxCarriedItems),
+  }),
+  z.strictObject({
+    outcome: z.literal('DEPOSITED'),
+    requestId: requestIdSchema,
+    cartId: cartIdSchema,
+    itemIds: z.array(itemIdSchema).min(1).max(GAME.maxCarriedItems),
+    cartItemCount: z.number().int().nonnegative(),
+    carriedItemIds: z.array(itemIdSchema).max(GAME.maxCarriedItems),
+  }),
+  z.strictObject({
+    outcome: z.literal('REJECTED'),
+    requestId: requestIdSchema,
+    reason: interactionRejectionReasonSchema,
+    message: z.string().min(1),
+    carriedItemIds: z.array(itemIdSchema).max(GAME.maxCarriedItems),
+  }),
+]);
 
 export const shoveRequestSchema = z.object({
   requestId: requestIdSchema,
@@ -173,11 +281,17 @@ export type PlayerConnectionState = z.infer<typeof playerConnectionStateSchema>;
 export type Vector2 = z.infer<typeof vector2Schema>;
 export type PublicPlayerState = z.infer<typeof publicPlayerStateSchema>;
 export type RoomPublicState = z.infer<typeof roomPublicStateSchema>;
-export type LootPublicState = z.infer<typeof lootPublicStateSchema>;
+export type LootItemPublicState = z.infer<typeof lootItemPublicStateSchema>;
+export type CartPublicState = z.infer<typeof cartPublicStateSchema>;
+export type CarriedCount = z.infer<typeof carriedCountSchema>;
+export type LootSync = z.infer<typeof lootSyncSchema>;
+export type LootUpdate = z.infer<typeof lootUpdateSchema>;
 export type SnapshotPlayerState = z.infer<typeof snapshotPlayerStateSchema>;
 export type GameSnapshot = z.infer<typeof gameSnapshotSchema>;
 export type ClientInput = z.infer<typeof clientInputSchema>;
 export type InteractionRequest = z.infer<typeof interactionRequestSchema>;
+export type InteractionRejectionReason = z.infer<typeof interactionRejectionReasonSchema>;
+export type InteractionResult = z.infer<typeof interactionResultSchema>;
 export type ShoveRequest = z.infer<typeof shoveRequestSchema>;
 export type RoomCreateRequest = z.infer<typeof roomCreateRequestSchema>;
 export type RoomJoinRequest = z.infer<typeof roomJoinRequestSchema>;

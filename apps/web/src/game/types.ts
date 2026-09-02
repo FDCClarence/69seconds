@@ -5,15 +5,26 @@ export interface CarryHudItem {
   label: string;
   shortLabel: string;
   color: string;
+  /** True while this slot is an unacknowledged prediction. */
+  pending: boolean;
 }
 
 export interface CarryHudState {
   carriedItems: readonly CarryHudItem[];
   depositedCount: number;
+  synchronized: boolean;
 }
 
+/** Server-decided outcomes plus the two purely local presentation notices. */
+export type GameFeedbackKind =
+  | 'PICKED_UP'
+  | 'DEPOSITED'
+  | InteractionRejectionReason
+  | 'DESYNCHRONIZED'
+  | 'SHOVE_DEBUG';
+
 export interface GameFeedback {
-  kind: 'PICKUP_SUCCEEDED' | 'DEPOSIT_SUCCEEDED' | 'HANDS_FULL' | 'ITEM_UNAVAILABLE' | 'INVALID_CART' | 'CART_EMPTY' | 'NO_NEARBY_TARGET' | 'RESET' | 'SHOVE_DEBUG';
+  kind: GameFeedbackKind;
   message: string;
 }
 
@@ -22,7 +33,7 @@ export interface GroceryGameCallbacks {
   onFeedback?: (feedback: GameFeedback) => void;
   onInventoryChange?: (inventory: CarryHudState) => void;
   onReady?: () => void;
-  /** Stable room slot today; server-assigned cart ownership remains authoritative later. */
+  /** Stable room slot; the server derives assigned cart ownership from the same slot. */
   assignedCartSlot?: number;
   localPlayerId?: string;
   initialPhase?: GamePhase;
@@ -30,6 +41,10 @@ export interface GroceryGameCallbacks {
   initialPlayers?: readonly PublicPlayerState[];
   sendInput?: (movement: MovementInput, sprint: boolean) => ClientInput | null;
   subscribeSnapshots?: (listener: (snapshot: GameSnapshot) => void) => () => void;
+  /** Requests an interaction and resolves with the server's authoritative decision. */
+  requestInteraction?: (request: InteractionRequest) => Promise<InteractionResult>;
+  subscribeLootSync?: (listener: (sync: LootSync) => void) => () => void;
+  subscribeLootUpdates?: (listener: (update: LootUpdate) => void) => () => void;
   onPhaseChange?: (phase: GamePhase) => void;
 }
 
@@ -41,4 +56,15 @@ export type GroceryGameFactory = (
   parent: HTMLElement,
   callbacks: GroceryGameCallbacks,
 ) => DestroyableGame;
-import type { ClientInput, GamePhase, GameSnapshot, MovementInput, PublicPlayerState } from '@69-seconds/shared';
+import type {
+  ClientInput,
+  GamePhase,
+  GameSnapshot,
+  InteractionRejectionReason,
+  InteractionRequest,
+  InteractionResult,
+  LootSync,
+  LootUpdate,
+  MovementInput,
+  PublicPlayerState,
+} from '@69-seconds/shared';

@@ -1,9 +1,10 @@
 import { GAME } from './constants.js';
 
 /**
- * This is presentation-neutral game data. The local Phaser prototype consumes
- * it today; the authoritative match service will consume the same catalog and
- * rules when networked loot is introduced.
+ * Presentation-neutral loot data. The authoritative match service generates its
+ * item set from this catalog; the Phaser client uses the same entries only to
+ * label and colour markers. The local prototype resolver that used to live here
+ * was replaced in Step 8 by server-owned availability and cart decisions.
  */
 export interface LootCatalogEntry {
   id: string;
@@ -37,83 +38,33 @@ export interface LootSpawnPoint {
   y: number;
 }
 
-export interface LocalLootItemState {
-  id: string;
-  catalogId: LootCatalogId;
-  available: boolean;
-}
-
-export interface LocalLootState {
-  assignedCartId: CartId;
-  loot: readonly LocalLootItemState[];
-  carriedItemIds: readonly string[];
-  depositedItemIds: readonly string[];
-}
-
-/** Intents deliberately contain no claimed result, so a future server can acknowledge them. */
-export type LootCommand =
-  | { type: 'PICK_UP'; itemId: string }
-  | { type: 'DEPOSIT'; cartId: CartId }
-  | { type: 'NO_TARGET' };
-
-export type LootCommandResult =
-  | { type: 'PICKUP_SUCCEEDED'; itemId: string }
-  | { type: 'DEPOSIT_SUCCEEDED'; itemIds: readonly string[] }
-  | { type: 'HANDS_FULL' }
-  | { type: 'ITEM_UNAVAILABLE' }
-  | { type: 'INVALID_CART'; cartId: CartId }
-  | { type: 'CART_EMPTY' }
-  | { type: 'NO_NEARBY_TARGET' };
-
-export interface LootCommandResolution {
-  state: LocalLootState;
-  result: LootCommandResult;
-}
-
-export function lootCatalogEntry(catalogId: LootCatalogId): LootCatalogEntry {
+export function lootCatalogEntry(catalogId: string): LootCatalogEntry {
   const entry = LOOT_CATALOG.find((candidate) => candidate.id === catalogId);
   if (!entry) throw new Error(`Unknown loot catalog id: ${catalogId}`);
   return entry;
 }
 
-export function createLocalLootState(
-  assignedCartId: CartId,
-  spawnPoints: readonly LootSpawnPoint[],
-): LocalLootState {
-  return {
-    assignedCartId,
-    loot: spawnPoints.map(({ id, catalogId }) => ({ id, catalogId, available: true })),
-    carriedItemIds: [],
-    depositedItemIds: [],
-  };
+/** Cart ownership is derived from the stable room slot, never from a client claim. */
+export function assignedCartIdForSlot(slot: number): CartId {
+  if (!Number.isInteger(slot) || slot < 0 || slot >= GAME.maxPlayers) {
+    throw new Error(`Cart assignment requires a slot between 0 and ${GAME.maxPlayers - 1}`);
+  }
+  return `cart-${slot}`;
 }
 
-export function resolveLootCommand(state: LocalLootState, command: LootCommand): LootCommandResolution {
-  if (command.type === 'NO_TARGET') return { state, result: { type: 'NO_NEARBY_TARGET' } };
+export function cartSlotFromId(cartId: string): number | null {
+  const match = /^cart-(\d+)$/.exec(cartId);
+  if (!match?.[1]) return null;
+  const slot = Number(match[1]);
+  return slot >= 0 && slot < GAME.maxPlayers ? slot : null;
+}
 
-  if (command.type === 'DEPOSIT') {
-    if (command.cartId !== state.assignedCartId) return { state, result: { type: 'INVALID_CART', cartId: command.cartId } };
-    if (state.carriedItemIds.length === 0) return { state, result: { type: 'CART_EMPTY' } };
-    return {
-      state: {
-        ...state,
-        carriedItemIds: [],
-        depositedItemIds: [...state.depositedItemIds, ...state.carriedItemIds],
-      },
-      result: { type: 'DEPOSIT_SUCCEEDED', itemIds: state.carriedItemIds },
-    };
-  }
+export function isAssignedCart(cartId: string, slot: number): boolean {
+  return cartSlotFromId(cartId) === slot;
+}
 
-  const item = state.loot.find((candidate) => candidate.id === command.itemId);
-  if (!item?.available) return { state, result: { type: 'ITEM_UNAVAILABLE' } };
-  if (state.carriedItemIds.length >= GAME.maxCarriedItems) return { state, result: { type: 'HANDS_FULL' } };
-
-  return {
-    state: {
-      ...state,
-      loot: state.loot.map((candidate) => candidate.id === item.id ? { ...candidate, available: false } : candidate),
-      carriedItemIds: [...state.carriedItemIds, item.id],
-    },
-    result: { type: 'PICKUP_SUCCEEDED', itemId: item.id },
-  };
+/** Stable, human-readable cart name shared by the HUD, prompts, and rejections. */
+export function cartLabel(cartId: string): string {
+  const slot = cartSlotFromId(cartId);
+  return slot === null ? 'an unknown cart' : `Cart ${slot + 1}`;
 }

@@ -24,8 +24,6 @@ function room(playerCount = 1): RoomPublicState {
       isConnected: true,
       connectionState: 'CONNECTED' as const,
       position: { ...PLAYER_SPAWN_POSITIONS[slot]! },
-      carriedItemIds: [],
-      depositedItemIds: [],
     })),
     serverTimeMs: 1_000,
     phaseEndsAtMs: 2_000,
@@ -126,6 +124,24 @@ describe('authoritative movement simulation', () => {
       acknowledgedInputSequence: -1,
     });
     expect(simulation.submitInput('player-0', input(0))).toBe(true);
+  });
+
+  it('validates interactions against the position the simulation itself owns', () => {
+    const simulation = new AuthoritativeRoomSimulation(room());
+    const near = { requestId: '00000000-0000-4000-8000-000000000001', action: 'PICK_UP' as const, targetId: 'loot-eggs' };
+
+    // Still in COUNTDOWN: the phase gate closes before any geometry is considered.
+    expect(simulation.resolveInteraction('player-0', near, 1_500).result)
+      .toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
+
+    simulation.tick(2_000);
+    // Spawn slot 0 is at the store centre, far from every shelf item.
+    expect(simulation.resolveInteraction('player-0', near, 2_000).result)
+      .toMatchObject({ outcome: 'REJECTED', reason: 'OUT_OF_RANGE' });
+    expect(simulation.lootSyncFor('player-0')).toMatchObject({
+      roomCode: 'ABC234',
+      carriedItemIds: [],
+    });
   });
 
   it('schedules twenty compact snapshots per thirty fixed simulation ticks', () => {

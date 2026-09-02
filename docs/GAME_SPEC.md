@@ -4,7 +4,7 @@
 
 69 Seconds is a private-room browser game for one to four players. A match covers one grocery-store looting round: players leave a shared central spawn, collect shared items, carry at most four at once, deposit them in their assigned carts, and see a tally after exactly 69 server-timed seconds. Later resource-management phases are not part of this version.
 
-This document defines the intended first playable. Authentication, the private-room lobby lifecycle, Phaser movement, and authoritative multiplayer movement are implemented; authoritative loot and later match mechanics remain later milestones.
+This document defines the intended first playable. Authentication, the private-room lobby lifecycle, Phaser movement, authoritative multiplayer movement, and authoritative loot collection and cart deposits are implemented; the sprint resource, shove, timer/tally, and later match mechanics remain later milestones.
 
 ## Match lifecycle
 
@@ -31,13 +31,61 @@ Phase transitions are one-way for a match: `LOBBY → COUNTDOWN → LOOTING → 
 
 - `W`, `A`, `S`, `D`: continuous, pixel-based movement. There is no tile stepping.
 - Diagonal input is normalized so it is not faster than movement on one axis.
-- `Shift`: sprint while held, subject to server-owned constraints added in the gameplay networking step.
+- `Shift`: sprint while held, limited by the server-owned stamina bar described below.
 - `Space`: context interaction, including pickup or deposit where valid.
 - `Ctrl`: request a shove against a valid nearby player.
 - Movement and action input has no gameplay effect outside `LOOTING`.
 - The server validates speed, collision, timing, proximity, target availability, inventory capacity, cart ownership, and shove constraints. Clients may predict presentation but cannot decide outcomes.
 
 Initial tunable values live in `packages/shared`: walk speed 150 px/s and sprint speed 235 px/s. They are placeholders until movement tuning.
+
+## Sprint resource (stamina)
+
+Decision: sprint is a **short stamina resource with server-owned drain and recovery**, not
+unlimited sprint with a tradeoff elsewhere. A visible bar makes the cost legible without
+adding a second control to learn, and the server already ticks player state at 30 Hz, so
+draining there costs nothing extra in architecture.
+
+- Every player starts each match with a **full** bar and recovers to full between matches.
+- The bar drains while the player is actually sprinting, and refills whenever they are not
+  — standing still and walking recover at the same rate.
+- Refill is half the drain rate, so sprinting is a real budget rather than a default state.
+- At zero the player keeps moving at walk speed; sprint is denied, not movement.
+- Once exhausted, sprint stays locked until the bar climbs back to the re-engage threshold.
+  Without that floor, a held `Shift` would stutter between walk and sprint every few ticks.
+- Stamina is not spent by shoving. Shove is gated by its own cooldown so the two mechanics
+  stay independently tunable.
+- The bar neither drains nor refills outside `LOOTING`.
+
+### Balance values
+
+| Value | Initial setting | Rationale |
+| --- | --- | --- |
+| Bar capacity | 100 units | Renders directly as a percentage. |
+| Drain while sprinting | 12 units/s | A full bar buys 8.3 s of sprint. |
+| Refill while not sprinting | 6 units/s | Empty to full takes 16.7 s. |
+| Re-engage threshold after exhaustion | 20 units | 3.3 s of walking before sprint returns. |
+
+Consequences of those numbers: a full bar covers roughly 1,960 px of sprint, just past one
+horizontal crossing of the 1,800 px map, so "one full bar is one trip across the store" is
+the mental model. Steady-state duty cycle is one third sprinting, and a player who spends
+the resource perfectly can sprint for about 28 s of the 69 s match.
+
+These live in `packages/shared` beside the existing movement and loot limits so the client
+HUD and the server tick read one source of truth.
+
+### Authority and presentation
+
+- The simulation owns each player's stamina, drains it on the fixed 30 Hz step, and is the
+  only writer. A client may render the bar but never reports its own value.
+- Stamina travels in the compact snapshot alongside position and `sprinting`, so the HUD,
+  remote-player presentation, and the final state all agree.
+- The local client predicts drain and refill from its own input for a responsive bar, then
+  reconciles to the snapshot by acknowledged input sequence, exactly as position does.
+- A client that sets `sprint: true` with an empty bar is moved at walk speed. The request is
+  ignored, not treated as an error, since latency makes it a normal race.
+- Reconnecting inside the grace window restores the server's stamina value; the bar cannot
+  be refilled by dropping the socket.
 
 ## Loot, inventory, and carts
 
@@ -49,7 +97,7 @@ Initial tunable values live in `packages/shared`: walk speed 150 px/s and sprint
 - Other players' carts cannot receive a player's deposit.
 - Simultaneous conflicts are resolved by server processing order; every client receives the resulting authoritative state.
 
-Exact item values, spawn table, interaction radius, sprint resource constraints, shove impulse/cooldown, and scoring presentation are intentionally deferred to their focused build steps.
+Exact item values, spawn table, interaction radius, shove impulse/cooldown, and scoring presentation are intentionally deferred to their focused build steps.
 
 ## Timing and tally
 
@@ -65,7 +113,10 @@ Exact item values, spawn table, interaction radius, sprint resource constraints,
 - Only the current host can begin a valid match, under the documented readiness rule.
 - All clients observe the same ordered lifecycle: LOBBY, COUNTDOWN, LOOTING, TALLY.
 - Players spawn near the map center and move smoothly with WASD; diagonal movement is normalized and collisions prevent crossing shelves/bounds.
-- Sprint changes speed only while permitted by the server.
+- Sprint changes speed only while the server-owned stamina bar permits it.
+- Stamina starts full, drains only while sprinting, refills only while not sprinting, and never leaves 0..capacity.
+- A player at zero stamina still walks, and cannot sprint again until the re-engage threshold is reached.
+- A modified client cannot sprint past an empty bar, report its own stamina, or refill by reconnecting.
 - A shared loot item cannot appear in two inventories, including under simultaneous requests.
 - No inventory ever exceeds four carried items.
 - Players can deposit only their carried loot in their assigned cart.
@@ -87,4 +138,4 @@ Exact item values, spawn table, interaction radius, sprint resource constraints,
 
 ## Current implementation boundary
 
-The 30 Hz server simulation now owns movement, sprint speed selection, bounds, shelf collision, spawn assignment, and the `COUNTDOWN → LOOTING` transition. Clients predict local movement and reconcile by acknowledged input sequence; remote movement is buffered and interpolated from 20 Hz compact snapshots. Loot resolution, scoring, shove effects, the complete timer/tally flow, durable room recovery, Tiled JSON, and Playwright browser coverage remain out of scope for this milestone. MySQL/Drizzle stores accounts and sessions, while rooms and matches remain intentionally process-local.
+The 30 Hz server simulation now owns movement, sprint speed selection, bounds, shelf collision, spawn assignment, and the `COUNTDOWN → LOOTING` transition. Clients predict local movement and reconcile by acknowledged input sequence; remote movement is buffered and interpolated from 20 Hz compact snapshots. The same simulation now also owns loot availability, carried inventories, and cart deposits, deciding every pickup and deposit atomically and answering each request with a typed acknowledgement. Scoring, shove effects, the complete timer/tally flow, durable room recovery, Tiled JSON, and Playwright browser coverage remain out of scope for this milestone. The sprint stamina rules above are a settled design decision but are **not yet implemented**: sprint currently selects speed with no resource cost. Stamina and shove land together in the sprint/shove build step, since both need the interaction-radius and line-of-access primitives that the loot-authority step introduces. MySQL/Drizzle stores accounts and sessions, while rooms and matches remain intentionally process-local.

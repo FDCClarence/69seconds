@@ -28,7 +28,7 @@ Owns React routes/screens, HTTP and Socket.IO clients, session UI state, accessi
 | Room membership/host/readiness | Server room registry | No (MVP) | Render snapshots; send intents |
 | Phase and phase deadline | Server match clock | No | Estimate display from server time |
 | Positions and sprint constraints | Server simulation | No | Predict/interpolate, then reconcile |
-| Loot availability/inventory/cart deposits | Server simulation | No | Request actions; render accepted state |
+| Loot availability/inventory/cart deposits | Server match loot authority | No | Request actions; predict a pickup, roll back on refusal |
 | Final tally | Server simulation/result | Match-scoped initially | Display immutable result |
 | Routes/forms/HUD/camera/animation | Web app | No | Local presentation only |
 
@@ -53,10 +53,10 @@ The committed migrations create normalized, uniquely indexed users and expiring 
 4. During gameplay the client emits intent events: `input:update`, `interaction:request`, and `shove:request`.
 5. The transport parses each payload with its shared Zod schema, applies rate/size controls, and passes validated intent to the room simulation.
 6. The authoritative tick validates phase, movement limits, collision, proximity, inventory, loot availability, cart ownership, sprint, and shoves.
-7. The server emits increasing-sequence `state:snapshot` messages. Rejected intent produces `game:error` with a stable code and optional request correlation.
-8. The browser runtime-validates snapshots/errors, ignores stale sequences, reconciles local presentation, and never mutates canonical server state.
+7. The server emits increasing-sequence `state:snapshot` messages, per-socket `loot:sync` state, and room-wide `loot:update` changes. `interaction:request` is answered by a typed acknowledgement; a malformed payload also produces `game:error` with a stable code.
+8. The browser runtime-validates snapshots/syncs/updates/errors, ignores stale sequences, reconciles local presentation, and never mutates canonical server state.
 
-The room handlers return typed acknowledgement unions while broadcasting runtime-validated `lobby:state` snapshots. Movement input now enters the authoritative room simulation; interaction and shove handlers remain validation-only until their focused milestones.
+The room handlers return typed acknowledgement unions while broadcasting runtime-validated `lobby:state` snapshots. Movement input and loot interactions now both enter the authoritative room simulation; only the shove handler remains validation-only until its focused milestone.
 
 ## Authoritative movement networking
 
@@ -68,6 +68,20 @@ The room handlers return typed acknowledgement unions while broadcasting runtime
 - Remote players retain timestamped snapshots and render 100 ms behind estimated server time, interpolating between samples. Stale snapshots and stale interpolation samples are ignored.
 - Starting assigns four separated, collision-safe positions and synchronizes `COUNTDOWN` through lobby state plus an initial movement snapshot. The server advances to `LOOTING` at the countdown deadline and broadcasts the phase change; movement and local action hooks are gated until then.
 - Disconnect and reconnect clear held server input and reset per-connection input sequencing, preventing stuck movement. Authoritative position and stable room slot remain in the existing room grace lifecycle.
+
+## Authoritative loot networking
+
+- `MatchLootAuthority` owns the match item set, generated from the shared store map's loot spawns and carts. An item is in exactly one place at any moment: on a shelf, in one player's hands, or in one cart. Cart ownership is derived from the stable room slot, never from a client claim.
+- The authority is composed into the room simulation, so interaction validation reuses the same authoritative position the movement tick produced. A client can narrow its own prompt but can never widen its reach.
+- Each request is validated in a fixed order: membership, duplicate request ID, phase and deadline, rate limit, target existence, interaction radius, line of access, availability, then carry capacity or cart ownership. Every rejection has a stable typed reason.
+- Every decision runs to completion synchronously on the event loop, with no `await` between reading an item's availability and claiming it. Two clients racing for one item are therefore serialized, and exactly one can observe it as available.
+- Acknowledgements are typed and per request: `PICKED_UP`, `DEPOSITED`, or `REJECTED` with a reason. Every acknowledgement restates the requester's authoritative carried item IDs, which is what lets an optimistic client confirm or roll back from the ack alone.
+- Only committed decisions are remembered for idempotency, keyed by request ID and bounded per player. A resent request ID replays its original acknowledgement and broadcasts nothing further, so a duplicate delivery can never double-apply. Rejections stay re-evaluable, so a legitimate retry after a rate limit or a phase edge is judged on fresh state.
+- Interaction spam is bounded by a per-player token bucket sized for deliberate key presses rather than held keys. A duplicate request ID is matched before the bucket is charged, so retries do not consume budget.
+- `loot:sync` is addressed to a single socket because it carries that player's private carried item IDs; it is sent on match start and after a reconnection. `loot:update` is broadcast to the room and carries only public facts: which item was taken, which items entered which cart, and each player's carried *count*. Another player's inventory contents are never published.
+- Loot never travels in the 20 Hz movement snapshot. Availability changes are events, not periodic state, so the high-frequency message stays compact.
+- The client predicts a pickup only: the marker hides and a dashed carry slot appears immediately, and both are restored if the server refuses or never answers. Deposits wait for confirmation, because reversing four slots reads worse than a brief pause.
+- Removing a player restocks whatever they were still holding and clears their cart ownership, while their deposited items stay in the cart so the tally keeps crediting completed work.
 
 ## In-memory room lifecycle
 
@@ -109,7 +123,7 @@ React owns LOBBY and the countdown overlay while mounting Phaser behind `COUNTDO
 ## Testing strategy
 
 - Shared: schema fixtures, rejection cases, constants, and pure rules with Vitest.
-- Server: HTTP tests, Socket.IO integration tests, room/simulation unit tests, fake authoritative clock, and authority/concurrency cases.
+- Server: HTTP tests, Socket.IO integration tests, room/simulation/loot-authority unit tests, fake authoritative clock, and authority/concurrency cases. The loot authority accepts injected spawns, carts, and collision, and `attachSocketServer` accepts an equivalent seam, so integration tests can exercise contested pickups without walking a player across the store.
 - Web: React/controller unit tests, Phaser lifecycle tests around a small bridge, and schema handling.
 - End-to-end: Playwright for auth, room lifecycle, multiple browser contexts, the 69-second transition using controlled test timing, and tally consistency.
 

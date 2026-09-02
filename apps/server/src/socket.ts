@@ -7,11 +7,16 @@ import {
   roomCreateRequestSchema,
   roomJoinRequestSchema,
   roomLeaveRequestSchema,
+  interactionResultSchema,
   serverErrorSchema,
   shoveRequestSchema,
   type ClientToServerEvents,
+  type InteractionRejectionReason,
+  type InteractionResult,
   type InterServerEvents,
+  type LootUpdate,
   type RoomCommandResult,
+  type RoomPublicState,
   type ServerError,
   type ServerToClientEvents,
   type SocketData,
@@ -22,6 +27,7 @@ import { Server, type Socket } from 'socket.io';
 import type { ZodType } from 'zod';
 import { readSessionTokenFromCookieHeader, type SessionCookieConfig } from './auth/cookies.js';
 import type { AuthService } from './auth/service.js';
+import { REJECTION_MESSAGES, type LootAuthorityOptions } from './game/loot-authority.js';
 import { AuthoritativeRoomSimulation } from './game/simulation.js';
 import { RoomRegistry, RoomRegistryError, type RoomRegistryOptions } from './rooms/registry.js';
 
@@ -33,6 +39,8 @@ export interface SocketServerOptions {
   auth: Pick<AuthService, 'resolveSession'>;
   cookie: Pick<SessionCookieConfig, 'name'>;
   rooms?: Omit<RoomRegistryOptions, 'onEvent'>;
+  /** Test seam for placing loot; production uses the shared store map. */
+  loot?: LootAuthorityOptions;
 }
 
 export interface SocketServerHandle {
@@ -78,6 +86,32 @@ function reply(
   acknowledge?.(result);
 }
 
+/**
+ * Transport-level rejection. Gameplay rejections come from the loot authority,
+ * which is the only component allowed to read authoritative loot state.
+ */
+function interactionRejection(
+  requestId: string,
+  reason: InteractionRejectionReason,
+  carriedItemIds: readonly string[] = [],
+): InteractionResult {
+  return interactionResultSchema.parse({
+    outcome: 'REJECTED',
+    requestId,
+    reason,
+    message: REJECTION_MESSAGES[reason],
+    carriedItemIds: [...carriedItemIds],
+  });
+}
+
+const FALLBACK_REQUEST_ID = '00000000-0000-4000-8000-000000000000';
+
+function requestIdFrom(payload: unknown): string {
+  const candidate = (payload as { requestId?: unknown } | null)?.requestId;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return typeof candidate === 'string' && uuid.test(candidate) ? candidate : FALLBACK_REQUEST_ID;
+}
+
 export function attachSocketServer(httpServer: HttpServer, options: SocketServerOptions): SocketServerHandle {
   const io: GameServer = new Server(httpServer, {
     cors: { origin: options.webOrigins, credentials: true },
@@ -87,7 +121,8 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     ...options.rooms,
     onEvent(event) {
       if (event.type === 'state') {
-        simulations.get(event.room.code)?.synchronizePlayers(event.room);
+        const restocked = simulations.get(event.room.code)?.synchronizePlayers(event.room) ?? [];
+        for (const update of restocked) io.to(event.room.code).emit('loot:update', update);
         io.to(event.room.code).emit('lobby:state', event.room);
       } else {
         simulations.delete(event.room.code);
@@ -95,6 +130,28 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       }
     },
   });
+  /** `loot:sync` carries a private inventory, so it is addressed per socket. */
+  function sendLootSync(room: RoomPublicState): void {
+    const simulation = simulations.get(room.code);
+    if (!simulation) return;
+    for (const connected of io.sockets.sockets.values()) {
+      const memberId = connected.data.playerId;
+      if (!memberId || connected.data.roomCode !== room.code) continue;
+      if (!room.players.some((player) => player.id === memberId)) continue;
+      connected.emit('loot:sync', simulation.lootSyncFor(memberId));
+    }
+  }
+
+  function sendLootSyncTo(socket: GameSocket, roomCode: string, playerId: string): void {
+    const simulation = simulations.get(roomCode);
+    if (!simulation) return;
+    socket.emit('loot:sync', simulation.lootSyncFor(playerId));
+  }
+
+  function broadcastLootUpdate(roomCode: string, update: LootUpdate | null): void {
+    if (update) io.to(roomCode).emit('loot:update', update);
+  }
+
   const simulationTimer = setInterval(() => {
     const serverNowMs = Date.now();
     for (const simulation of simulations.values()) {
@@ -155,7 +212,10 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       simulations.get(recovered.code)?.resetInput(playerId, true);
       socket.data.roomCode = recovered.code;
       void Promise.resolve(socket.join(recovered.code))
-        .then(() => io.to(recovered.code).emit('lobby:state', recovered))
+        .then(() => {
+          io.to(recovered.code).emit('lobby:state', recovered);
+          sendLootSyncTo(socket, recovered.code, playerId);
+        })
         .catch((error: unknown) => console.error(error));
     }
 
@@ -200,7 +260,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       const code = rooms.roomForPlayer(playerId);
       try {
         const room = rooms.leave(playerId);
-        if (code) simulations.get(code)?.removePlayer(playerId);
+        if (code) broadcastLootUpdate(code, simulations.get(code)?.removePlayer(playerId) ?? null);
         if (code) {
           for (const connectedSocket of io.sockets.sockets.values()) {
             if (connectedSocket.data.playerId !== playerId) continue;
@@ -237,10 +297,11 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       }
       try {
         const room = rooms.start(playerId);
-        const simulation = new AuthoritativeRoomSimulation(room);
+        const simulation = new AuthoritativeRoomSimulation(room, options.loot ?? {});
         simulations.set(room.code, simulation);
         io.to(room.code).emit('lobby:state', room);
         io.to(room.code).emit('state:snapshot', simulation.snapshot(Date.now()));
+        sendLootSync(room);
         reply(acknowledge, roomCommandResultSchema.parse({ ok: true, room }));
       } catch (error) {
         reply(acknowledge, commandFailure(error, 'lobby:start'));
@@ -258,8 +319,23 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       simulations.get(code)?.submitInput(playerId, parsed.data);
     });
 
-    socket.on('interaction:request', (payload) => {
-      if (!isValid(interactionRequestSchema, payload)) reportInvalidGameplayPayload(socket, 'interaction:request');
+    socket.on('interaction:request', (payload, acknowledge) => {
+      const parsed = interactionRequestSchema.safeParse(payload);
+      if (!parsed.success) {
+        reportInvalidGameplayPayload(socket, 'interaction:request');
+        acknowledge?.(interactionRejection(requestIdFrom(payload), 'INVALID_PAYLOAD'));
+        return;
+      }
+      const code = rooms.roomForPlayer(playerId);
+      const simulation = code ? simulations.get(code) : undefined;
+      if (!code || !simulation) {
+        acknowledge?.(interactionRejection(parsed.data.requestId, code ? 'INVALID_PHASE' : 'NOT_IN_MATCH'));
+        return;
+      }
+      const resolution = simulation.resolveInteraction(playerId, parsed.data, Date.now());
+      acknowledge?.(resolution.result);
+      // A replayed request ID reports its original decision and changes nothing.
+      broadcastLootUpdate(code, resolution.update);
     });
 
     socket.on('shove:request', (payload) => {

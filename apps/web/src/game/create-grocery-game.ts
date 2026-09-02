@@ -10,7 +10,6 @@ const CAPTURED_KEYS = [
   Phaser.Input.Keyboard.KeyCodes.SHIFT,
   Phaser.Input.Keyboard.KeyCodes.SPACE,
   Phaser.Input.Keyboard.KeyCodes.CTRL,
-  Phaser.Input.Keyboard.KeyCodes.R,
 ];
 
 export const createGroceryGame: GroceryGameFactory = (parent, callbacks) => new Phaser.Game({

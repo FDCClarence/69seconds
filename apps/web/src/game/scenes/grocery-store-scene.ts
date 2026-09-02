@@ -1,23 +1,39 @@
 import Phaser from 'phaser';
 import {
+  GAME,
+  LOOT,
   NETWORK,
   PLAYER_SPAWN_POSITIONS,
-  createLocalLootState,
+  assignedCartIdForSlot,
+  cartLabel,
+  hasLineOfAccess,
+  isWithinInteractionRadius,
   lootCatalogEntry,
-  resolveLootCommand,
-  type CartId,
-  type LocalLootState,
-  type LootCatalogId,
-  type LootCommand,
-  type LootCommandResult,
   simulatePlayerMovement,
+  type CartId,
   type ClientInput,
   type GamePhase,
   type GameSnapshot,
+  type InteractionRequest,
+  type InteractionResult,
 } from '@69-seconds/shared';
 import { PlayerEntity } from '../entities/player-entity.js';
 import { GameInput } from '../input/game-input.js';
 import { RemoteInterpolationBuffer } from '../network/interpolation.js';
+import {
+  applyInteractionResult,
+  applyLootSync,
+  applyLootUpdate,
+  cartById,
+  createLootView,
+  isItemVisible,
+  predictPickup,
+  predictedCarriedItemIds,
+  rollbackPickup,
+  visibleItems,
+  type LootView,
+  type LootViewItem,
+} from '../network/loot-view.js';
 import { reconcilePredictedPosition } from '../network/prediction.js';
 import {
   GENERATED_GROCERY_STORE_MAP,
@@ -30,8 +46,6 @@ import type { GameFeedback, GroceryGameCallbacks } from '../types.js';
 const MAP_WIDTH = GENERATED_GROCERY_STORE_MAP.width;
 const MAP_HEIGHT = GENERATED_GROCERY_STORE_MAP.height;
 const SHELF_TEXTURE = 'prototype-shelf';
-const LOOT_INTERACTION_RADIUS = 64;
-const CART_INTERACTION_RADIUS = 92;
 
 export class GroceryStoreScene extends Phaser.Scene {
   private readonly callbacks: GroceryGameCallbacks;
@@ -39,7 +53,7 @@ export class GroceryStoreScene extends Phaser.Scene {
   private controls?: GameInput;
   private feedbackText?: Phaser.GameObjects.Text;
   private promptText?: Phaser.GameObjects.Text;
-  private lootState?: LocalLootState;
+  private lootView: LootView = createLootView();
   private readonly lootObjects = new Map<string, Phaser.GameObjects.Container>();
   private readonly remotePlayers = new Map<string, PlayerEntity>();
   private readonly remoteBuffers = new Map<string, RemoteInterpolationBuffer>();
@@ -49,7 +63,8 @@ export class GroceryStoreScene extends Phaser.Scene {
   private lastSnapshotSequence = -1;
   private lastAcknowledgedInputSequence = -1;
   private serverClockOffsetMs = 0;
-  private unsubscribeSnapshots: (() => void) | undefined;
+  private awaitingInteraction = false;
+  private readonly unsubscribes: (() => void)[] = [];
 
   constructor(callbacks: GroceryGameCallbacks) {
     super('grocery-store-test');
@@ -70,7 +85,7 @@ export class GroceryStoreScene extends Phaser.Scene {
       if (state.id !== this.callbacks.localPlayerId) this.ensureRemotePlayer(state.id, state.position.x, state.position.y);
     }
     this.controls = new GameInput(this);
-    this.resetLoot(false);
+    this.publishInventory();
     this.cameras.main.startFollow(this.player, false, 0.1, 0.1);
     this.cameras.main.setBackgroundColor('#132126');
     this.resizeCamera(this.scale.gameSize);
@@ -87,14 +102,26 @@ export class GroceryStoreScene extends Phaser.Scene {
     const inputTarget = this.game.canvas.parentElement;
     window.addEventListener('blur', resetInput);
     inputTarget?.addEventListener('game-input-blur', resetInput);
-    this.unsubscribeSnapshots = this.callbacks.subscribeSnapshots?.((snapshot) => {
-      if (!this.callbacks.roomCode || snapshot.roomCode === this.callbacks.roomCode) this.applySnapshot(snapshot);
-    });
+    this.subscribe(this.callbacks.subscribeSnapshots?.((snapshot) => {
+      if (this.belongsToRoom(snapshot.roomCode)) this.applySnapshot(snapshot);
+    }));
+    this.subscribe(this.callbacks.subscribeLootSync?.((sync) => {
+      if (!this.belongsToRoom(sync.roomCode)) return;
+      this.lootView = applyLootSync(this.lootView, sync);
+      this.rebuildLootObjects();
+      this.publishInventory();
+    }));
+    this.subscribe(this.callbacks.subscribeLootUpdates?.((update) => {
+      if (!this.belongsToRoom(update.roomCode)) return;
+      this.lootView = applyLootUpdate(this.lootView, update);
+      this.refreshLootVisibility();
+      this.publishInventory();
+    }));
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       window.removeEventListener('blur', resetInput);
       inputTarget?.removeEventListener('game-input-blur', resetInput);
       this.scale.off(Phaser.Scale.Events.RESIZE, this.resizeCamera, this);
-      this.unsubscribeSnapshots?.();
+      for (const unsubscribe of this.unsubscribes) unsubscribe();
     });
     this.callbacks.onReady?.();
   }
@@ -124,12 +151,19 @@ export class GroceryStoreScene extends Phaser.Scene {
     this.player.move(frame.velocity, frame.sprinting);
     this.interpolateRemotePlayers();
     const action = this.controls.readAction();
-    if (this.phase === 'LOOTING' && action === 'INTERACT') this.interact();
+    if (this.phase === 'LOOTING' && action === 'INTERACT') void this.interact();
     if (this.phase === 'LOOTING' && action === 'SHOVE') {
       this.showFeedback({ kind: 'SHOVE_DEBUG', message: 'CTRL · shove remains a local debug hook' });
     }
-    if (this.phase === 'LOOTING' && this.controls.readDebugReset()) this.resetLoot(true);
     this.updateInteractionPrompt();
+  }
+
+  private subscribe(unsubscribe: (() => void) | undefined): void {
+    if (unsubscribe) this.unsubscribes.push(unsubscribe);
+  }
+
+  private belongsToRoom(roomCode: string): boolean {
+    return !this.callbacks.roomCode || roomCode === this.callbacks.roomCode;
   }
 
   private applySnapshot(snapshot: GameSnapshot): void {
@@ -181,43 +215,70 @@ export class GroceryStoreScene extends Phaser.Scene {
     }
   }
 
-  private interact(): void {
-    const item = this.nearestLoot();
-    if (item) {
-      this.submitLootCommand({ type: 'PICK_UP', itemId: item.id });
+  /**
+   * Nominates the target this client believes is nearest and lets the server
+   * decide. A pickup is predicted immediately and rolled back if refused; a
+   * deposit waits for confirmation, because reversing four slots reads worse
+   * than a brief pause.
+   */
+  private async interact(): Promise<void> {
+    if (!this.callbacks.requestInteraction || this.awaitingInteraction) return;
+    if (!this.lootView.synchronized) {
+      this.showFeedback({ kind: 'DESYNCHRONIZED', message: 'Waiting for the match loot state' });
       return;
     }
-    const cart = this.nearestCart();
-    this.submitLootCommand(cart ? { type: 'DEPOSIT', cartId: cart.id } : { type: 'NO_TARGET' });
+    const item = this.nearestReachableItem();
+    const cart = item ? undefined : this.nearestReachableCart();
+    const request: InteractionRequest = {
+      requestId: this.newRequestId(),
+      action: item ? 'PICK_UP' : cart ? 'DROP_OFF' : 'INTERACT',
+      ...(item ? { targetId: item.id } : cart ? { targetId: cart.id } : {}),
+    };
+    if (item) {
+      this.lootView = predictPickup(this.lootView, request.requestId, item.id);
+      this.refreshLootVisibility();
+      this.publishInventory();
+    }
+
+    this.awaitingInteraction = true;
+    try {
+      const result = await this.callbacks.requestInteraction(request);
+      this.lootView = applyInteractionResult(this.lootView, result);
+      this.refreshLootVisibility();
+      this.publishInventory();
+      this.showFeedback(this.feedbackFor(result));
+    } catch {
+      // No acknowledgement: discard the prediction rather than showing loot we may not hold.
+      this.lootView = rollbackPickup(this.lootView, request.requestId);
+      this.refreshLootVisibility();
+      this.publishInventory();
+      this.showFeedback({ kind: 'DESYNCHRONIZED', message: 'The server did not confirm that interaction' });
+    } finally {
+      this.awaitingInteraction = false;
+    }
   }
 
-  /** Local adapter only: Step 8 replaces this resolver with a server acknowledgement. */
-  private submitLootCommand(command: LootCommand): void {
-    if (!this.lootState) return;
-    const resolution = resolveLootCommand(this.lootState, command);
-    this.lootState = resolution.state;
-    if (resolution.result.type === 'PICKUP_SUCCEEDED') this.lootObjects.get(resolution.result.itemId)?.destroy();
-    this.publishInventory();
-    this.showFeedback(this.feedbackFor(resolution.result));
-  }
-
-  private resetLoot(announce: boolean): void {
+  private rebuildLootObjects(): void {
     for (const lootObject of this.lootObjects.values()) lootObject.destroy();
     this.lootObjects.clear();
-    this.lootState = createLocalLootState(this.assignedCartId(), STORE_OBJECT_LAYER.lootSpawnPoints);
-    for (const spawn of STORE_OBJECT_LAYER.lootSpawnPoints) {
-      this.lootObjects.set(spawn.id, this.createLootObject(spawn.id, spawn.catalogId, spawn.x, spawn.y));
+    for (const item of Object.values(this.lootView.items)) {
+      this.lootObjects.set(item.id, this.createLootObject(item.id, item.catalogId, item.position.x, item.position.y));
     }
-    this.publishInventory();
-    if (announce) this.showFeedback({ kind: 'RESET', message: 'Local loot reset · all shelves restocked' });
+    this.refreshLootVisibility();
+  }
+
+  private refreshLootVisibility(): void {
+    for (const [itemId, lootObject] of this.lootObjects) {
+      lootObject.setVisible(isItemVisible(this.lootView, itemId));
+    }
   }
 
   private assignedCartId(): CartId {
     const slot = Phaser.Math.Clamp(this.callbacks.assignedCartSlot ?? 0, 0, STORE_OBJECT_LAYER.carts.length - 1);
-    return `cart-${slot}` as CartId;
+    return assignedCartIdForSlot(slot);
   }
 
-  private createLootObject(id: string, catalogId: LootCatalogId, x: number, y: number): Phaser.GameObjects.Container {
+  private createLootObject(id: string, catalogId: string, x: number, y: number): Phaser.GameObjects.Container {
     const catalog = lootCatalogEntry(catalogId);
     const marker = this.add.circle(0, 0, 15, catalog.color).setStrokeStyle(3, 0x213a37).setDepth(18);
     const tag = this.add.text(0, -28, catalog.shortLabel, {
@@ -226,39 +287,55 @@ export class GroceryStoreScene extends Phaser.Scene {
     return this.add.container(x, y, [marker, tag]).setName(id).setDepth(18);
   }
 
-  private nearestLoot(): { id: string; catalogId: LootCatalogId } | undefined {
-    if (!this.player || !this.lootState) return undefined;
-    return STORE_OBJECT_LAYER.lootSpawnPoints
-      .filter((spawn) => this.lootState?.loot.find((item) => item.id === spawn.id)?.available)
-      .map((spawn) => ({ ...spawn, distance: Phaser.Math.Distance.Between(this.player!.x, this.player!.y, spawn.x, spawn.y) }))
-      .filter((spawn) => spawn.distance <= LOOT_INTERACTION_RADIUS)
-      .sort((left, right) => left.distance - right.distance)[0];
+  /** Mirrors the server's radius and line-of-access checks so prompts stay honest. */
+  private nearestReachableItem(): LootViewItem | undefined {
+    const from = this.playerPosition();
+    if (!from) return undefined;
+    return visibleItems(this.lootView)
+      .filter((item) => isWithinInteractionRadius(from, item.position, LOOT.itemInteractionRadiusPixels))
+      .filter((item) => hasLineOfAccess(from, item.position))
+      .sort((left, right) => this.distanceTo(left.position) - this.distanceTo(right.position))[0];
   }
 
-  private nearestCart(): StoreCart | undefined {
-    if (!this.player) return undefined;
+  private nearestReachableCart(): StoreCart | undefined {
+    const from = this.playerPosition();
+    if (!from) return undefined;
     return STORE_OBJECT_LAYER.carts
-      .map((cart) => ({ ...cart, distance: Phaser.Math.Distance.Between(this.player!.x, this.player!.y, cart.x, cart.y) }))
-      .filter((cart) => cart.distance <= CART_INTERACTION_RADIUS)
-      .sort((left, right) => left.distance - right.distance)[0];
+      .filter((cart) => isWithinInteractionRadius(from, cart, LOOT.cartInteractionRadiusPixels))
+      .filter((cart) => hasLineOfAccess(from, cart))
+      .sort((left, right) => this.distanceTo(left) - this.distanceTo(right))[0];
+  }
+
+  private playerPosition(): { x: number; y: number } | undefined {
+    return this.player ? { x: this.player.x, y: this.player.y } : undefined;
+  }
+
+  private distanceTo(target: { x: number; y: number }): number {
+    const from = this.playerPosition();
+    return from ? Phaser.Math.Distance.Between(from.x, from.y, target.x, target.y) : Number.POSITIVE_INFINITY;
   }
 
   private updateInteractionPrompt(): void {
-    const item = this.nearestLoot();
+    if (!this.lootView.synchronized) {
+      this.setPrompt('Synchronizing the store with the server');
+      return;
+    }
+    const carried = predictedCarriedItemIds(this.lootView).length;
+    const item = this.nearestReachableItem();
     if (item) {
       const catalog = lootCatalogEntry(item.catalogId);
-      const full = this.lootState?.carriedItemIds.length === 4;
+      const full = carried >= GAME.maxCarriedItems;
       this.setPrompt(full ? 'HANDS FULL · deposit at your cart' : `SPACE · pick up ${catalog.label}`);
       return;
     }
-    const cart = this.nearestCart();
+    const cart = this.nearestReachableCart();
     if (cart) {
-      if (cart.id !== this.assignedCartId()) this.setPrompt(`WRONG CART · Cart ${cart.slot + 1} is not assigned to you`);
-      else if (this.lootState?.carriedItemIds.length === 0) this.setPrompt('YOUR CART · collect an item first');
-      else this.setPrompt(`SPACE · deposit ${this.lootState?.carriedItemIds.length ?? 0} item(s) in your cart`);
+      if (cart.id !== this.assignedCartId()) this.setPrompt(`WRONG CART · ${cartLabel(cart.id)} is not assigned to you`);
+      else if (carried === 0) this.setPrompt('YOUR CART · collect an item first');
+      else this.setPrompt(`SPACE · deposit ${carried} item(s) in your cart`);
       return;
     }
-    this.setPrompt('Explore the aisles · R resets local loot');
+    this.setPrompt('Explore the aisles · the server owns every shelf');
   }
 
   private setPrompt(text: string): void {
@@ -266,31 +343,42 @@ export class GroceryStoreScene extends Phaser.Scene {
   }
 
   private publishInventory(): void {
-    if (!this.lootState) return;
-    const carriedItems = this.lootState.carriedItemIds.flatMap((itemId) => {
-      const item = this.lootState?.loot.find((candidate) => candidate.id === itemId);
+    const pendingIds = new Set(this.lootView.pendingPickups.map((pending) => pending.itemId));
+    const carriedItems = predictedCarriedItemIds(this.lootView).flatMap((itemId) => {
+      const item = this.lootView.items[itemId];
       if (!item) return [];
       const catalog = lootCatalogEntry(item.catalogId);
-      return [{ id: item.id, label: catalog.label, shortLabel: catalog.shortLabel, color: `#${catalog.color.toString(16).padStart(6, '0')}` }];
+      return [{
+        id: item.id,
+        label: catalog.label,
+        shortLabel: catalog.shortLabel,
+        color: `#${catalog.color.toString(16).padStart(6, '0')}`,
+        pending: pendingIds.has(item.id),
+      }];
     });
-    this.callbacks.onInventoryChange?.({ carriedItems, depositedCount: this.lootState.depositedItemIds.length });
+    this.callbacks.onInventoryChange?.({
+      carriedItems,
+      depositedCount: cartById(this.lootView, this.assignedCartId())?.itemIds.length ?? 0,
+      synchronized: this.lootView.synchronized,
+    });
   }
 
-  private feedbackFor(result: LootCommandResult): GameFeedback {
-    switch (result.type) {
-      case 'PICKUP_SUCCEEDED': return { kind: result.type, message: `Picked up ${this.labelFor(result.itemId)}` };
-      case 'DEPOSIT_SUCCEEDED': return { kind: result.type, message: `Deposited ${result.itemIds.length} item(s) in your cart` };
-      case 'HANDS_FULL': return { kind: result.type, message: 'Hands full · deposit at your assigned cart' };
-      case 'ITEM_UNAVAILABLE': return { kind: result.type, message: 'That item is no longer available' };
-      case 'INVALID_CART': return { kind: result.type, message: `Wrong cart · your cart is ${this.assignedCartId().replace('cart-', 'Cart ')}` };
-      case 'CART_EMPTY': return { kind: result.type, message: 'Nothing to deposit · collect an item first' };
-      case 'NO_NEARBY_TARGET': return { kind: result.type, message: 'No item or cart close enough' };
+  private feedbackFor(result: InteractionResult): GameFeedback {
+    if (result.outcome === 'PICKED_UP') {
+      return { kind: 'PICKED_UP', message: `Picked up ${lootCatalogEntry(result.catalogId).label}` };
     }
+    if (result.outcome === 'DEPOSITED') {
+      return { kind: 'DEPOSITED', message: `Deposited ${result.itemIds.length} item(s) · cart holds ${result.cartItemCount}` };
+    }
+    return { kind: result.reason, message: result.message };
   }
 
-  private labelFor(itemId: string): string {
-    const item = this.lootState?.loot.find((candidate) => candidate.id === itemId);
-    return item ? lootCatalogEntry(item.catalogId).label : 'item';
+  private newRequestId(): string {
+    const webCrypto = globalThis.crypto;
+    if (typeof webCrypto?.randomUUID === 'function') return webCrypto.randomUUID();
+    // Deterministic fallback for environments without Web Crypto; still unique per press.
+    const random = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
+    return `${random()}${random()}-${random()}-4${random().slice(1)}-8${random().slice(1)}-${random()}${random()}${random()}`;
   }
 
   private showFeedback(feedback: GameFeedback): void {

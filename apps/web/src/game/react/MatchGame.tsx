@@ -20,7 +20,7 @@ export function MatchGame({
   const gameHost = useRef<HTMLDivElement>(null);
   const [ready, setReady] = useState(false);
   const [feedback, setFeedback] = useState<GameFeedback | null>(null);
-  const [inventory, setInventory] = useState<CarryHudState>({ carriedItems: [], depositedCount: 0 });
+  const [inventory, setInventory] = useState<CarryHudState>({ carriedItems: [], depositedCount: 0, synchronized: false });
   const [displayPhase, setDisplayPhase] = useState(room.phase);
   const [countdown, setCountdown] = useState<number | null>(null);
   const initialRoom = useRef(room);
@@ -52,7 +52,7 @@ export function MatchGame({
     const parent = gameHost.current;
     if (!parent) return undefined;
     setReady(false);
-    setInventory({ carriedItems: [], depositedCount: 0 });
+    setInventory({ carriedItems: [], depositedCount: 0, synchronized: false });
     let cleanup: (() => void) | undefined;
     let cancelled = false;
     void (async () => {
@@ -70,6 +70,11 @@ export function MatchGame({
         initialPlayers: initialRoom.current.players,
         sendInput: (movement, sprint) => roomClient.sendInput?.(movement, sprint) ?? null,
         subscribeSnapshots: (listener) => roomClient.subscribeSnapshots?.(listener) ?? (() => undefined),
+        requestInteraction: (request) => roomClient.requestInteraction
+          ? roomClient.requestInteraction(request)
+          : Promise.reject(new Error('This room client cannot request interactions')),
+        subscribeLootSync: (listener) => roomClient.subscribeLootSync?.(listener) ?? (() => undefined),
+        subscribeLootUpdates: (listener) => roomClient.subscribeLootUpdates?.(listener) ?? (() => undefined),
         onPhaseChange: setDisplayPhase,
       });
     })();
@@ -93,17 +98,18 @@ export function MatchGame({
     <section className="game-hud" aria-label="Gameplay controls and carry slots">
       <div className="game-hud-topline">
         <div><span className="hud-label">Room</span><strong>{room.code}</strong></div>
-        <div className={`hud-status ${ready ? 'is-ready' : ''}`}><i />{ready ? 'Network synchronized' : 'Loading scene'}</div>
+        <div className={`hud-status ${ready && inventory.synchronized ? 'is-ready' : ''}`}><i />{!ready ? 'Loading scene' : inventory.synchronized ? 'Loot synchronized' : 'Awaiting loot state'}</div>
         <div><span className="hud-label">Server phase</span><strong>{displayPhase}</strong></div>
       </div>
       <div className="game-controls" aria-label="Controls">
         <span><kbd>WASD</kbd> move</span><span><kbd>Shift</kbd> sprint</span>
-        <span><kbd>Space</kbd> interact</span><span><kbd>R</kbd> reset</span><span><kbd>Ctrl</kbd> shove</span>
+        <span><kbd>Space</kbd> interact</span><span><kbd>Ctrl</kbd> shove</span>
       </div>
       <div className="carry-hud"><span className="hud-label">Carry</span><ol aria-label={`${inventory.carriedItems.length} of ${GAME.maxCarriedItems} carry slots filled`}>
         {Array.from({ length: GAME.maxCarriedItems }, (_, index) => {
           const item = inventory.carriedItems[index];
-          return <li key={index} className={item ? 'is-filled' : undefined} aria-label={item ? `${item.label} in carry slot ${index + 1}` : `Empty carry slot ${index + 1}`}>
+          const className = item ? `is-filled${item.pending ? ' is-pending' : ''}` : undefined;
+          return <li key={index} className={className} aria-label={item ? `${item.label} in carry slot ${index + 1}${item.pending ? ', awaiting confirmation' : ''}` : `Empty carry slot ${index + 1}`}>
             <span>{index + 1}</span>{item && <b style={{ backgroundColor: item.color }} title={item.label}>{item.shortLabel}</b>}
           </li>;
         })}

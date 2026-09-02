@@ -6,6 +6,9 @@ import {
   loginRequestSchema,
   registerRequestSchema,
   gameSnapshotSchema,
+  interactionRequestSchema,
+  interactionResultSchema,
+  lootUpdateSchema,
   normalizeMovementVector,
   roomCodeSchema,
   roomCommandResultSchema,
@@ -50,6 +53,67 @@ describe('shared contracts', () => {
       movement: { up: false, down: false, left: false, right: true },
       sprint: false,
       position: { x: 999_999, y: 999_999 },
+    })).toThrow();
+  });
+
+  it('rejects an interaction request that claims its own outcome', () => {
+    const requestId = '3f1c2c9a-5d2b-4a11-8f6e-9c0d1a2b3c4d';
+    expect(interactionRequestSchema.parse({ requestId, action: 'INTERACT' }))
+      .toEqual({ requestId, action: 'INTERACT' });
+    expect(interactionRequestSchema.parse({ requestId, action: 'PICK_UP', targetId: 'loot-milk' }).targetId)
+      .toBe('loot-milk');
+    expect(() => interactionRequestSchema.parse({
+      requestId,
+      action: 'PICK_UP',
+      targetId: 'loot-milk',
+      outcome: 'PICKED_UP',
+    })).toThrow();
+    expect(() => interactionRequestSchema.parse({
+      requestId,
+      action: 'DROP_OFF',
+      targetId: 'cart-0',
+      carriedItemIds: ['loot-milk', 'loot-bread'],
+    })).toThrow();
+    expect(() => interactionRequestSchema.parse({ requestId: 'not-a-uuid', action: 'INTERACT' })).toThrow();
+  });
+
+  it('acknowledges every interaction with the requester\'s authoritative hands', () => {
+    const requestId = '3f1c2c9a-5d2b-4a11-8f6e-9c0d1a2b3c4d';
+    const rejected = interactionResultSchema.parse({
+      outcome: 'REJECTED',
+      requestId,
+      reason: 'HANDS_FULL',
+      message: 'Hands full',
+      carriedItemIds: ['a', 'b', 'c', 'd'],
+    });
+    expect(rejected.carriedItemIds).toHaveLength(GAME.maxCarriedItems);
+    expect(() => interactionResultSchema.parse({
+      outcome: 'PICKED_UP',
+      requestId,
+      itemId: 'loot-milk',
+      catalogId: 'milk',
+      carriedItemIds: ['a', 'b', 'c', 'd', 'e'],
+    })).toThrow();
+  });
+
+  it('keeps broadcast loot updates free of private inventory contents', () => {
+    const update = lootUpdateSchema.parse({
+      type: 'PICKED_UP',
+      sequence: 3,
+      roomCode: 'ABC234',
+      playerId: 'player-1',
+      itemId: 'loot-milk',
+      carriedCount: 2,
+    });
+    expect(update).not.toHaveProperty('carriedItemIds');
+    expect(() => lootUpdateSchema.parse({
+      type: 'PICKED_UP',
+      sequence: 3,
+      roomCode: 'ABC234',
+      playerId: 'player-1',
+      itemId: 'loot-milk',
+      carriedCount: 2,
+      carriedItemIds: ['loot-milk'],
     })).toThrow();
   });
 

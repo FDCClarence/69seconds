@@ -1,12 +1,19 @@
 import {
   roomClosedSchema,
   gameSnapshotSchema,
+  interactionResultSchema,
+  lootSyncSchema,
+  lootUpdateSchema,
   roomCommandResultSchema,
   roomPublicStateSchema,
   serverErrorSchema,
   type ClientToServerEvents,
   type ClientInput,
   type GameSnapshot,
+  type InteractionRequest,
+  type InteractionResult,
+  type LootSync,
+  type LootUpdate,
   type MovementInput,
   type RoomClosed,
   type RoomPublicState,
@@ -36,6 +43,9 @@ export interface RoomClient {
   startMatch(): Promise<RoomPublicState>;
   sendInput?(movement: MovementInput, sprint: boolean): ClientInput | null;
   subscribeSnapshots?(listener: (snapshot: GameSnapshot) => void): () => void;
+  requestInteraction?(request: InteractionRequest): Promise<InteractionResult>;
+  subscribeLootSync?(listener: (sync: LootSync) => void): () => void;
+  subscribeLootUpdates?(listener: (update: LootUpdate) => void): () => void;
 }
 
 export class RoomClientError extends Error {
@@ -64,6 +74,8 @@ class SocketRoomClient implements RoomClient {
   private readonly listeners = new Set<RoomClientListeners>();
   private connectionState: SocketConnectionState = 'DISCONNECTED';
   private readonly snapshotListeners = new Set<(snapshot: GameSnapshot) => void>();
+  private readonly lootSyncListeners = new Set<(sync: LootSync) => void>();
+  private readonly lootUpdateListeners = new Set<(update: LootUpdate) => void>();
   private nextInputSequence = 0;
 
   constructor(private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>) {
@@ -100,6 +112,22 @@ class SocketRoomClient implements RoomClient {
         return;
       }
       for (const listener of this.snapshotListeners) listener(parsed.data);
+    });
+    socket.on('loot:sync', (payload) => {
+      const parsed = lootSyncSchema.safeParse(payload);
+      if (!parsed.success) {
+        this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received invalid loot state', retryable: true });
+        return;
+      }
+      for (const listener of this.lootSyncListeners) listener(parsed.data);
+    });
+    socket.on('loot:update', (payload) => {
+      const parsed = lootUpdateSchema.safeParse(payload);
+      if (!parsed.success) {
+        this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received invalid loot update', retryable: true });
+        return;
+      }
+      for (const listener of this.lootUpdateListeners) listener(parsed.data);
     });
   }
 
@@ -170,6 +198,42 @@ class SocketRoomClient implements RoomClient {
   subscribeSnapshots(listener: (snapshot: GameSnapshot) => void): () => void {
     this.snapshotListeners.add(listener);
     return () => this.snapshotListeners.delete(listener);
+  }
+
+  subscribeLootSync(listener: (sync: LootSync) => void): () => void {
+    this.lootSyncListeners.add(listener);
+    return () => this.lootSyncListeners.delete(listener);
+  }
+
+  subscribeLootUpdates(listener: (update: LootUpdate) => void): () => void {
+    this.lootUpdateListeners.add(listener);
+    return () => this.lootUpdateListeners.delete(listener);
+  }
+
+  /**
+   * Sends an interaction intent and resolves with the server's decision. The
+   * request ID lets the server replay a committed decision if this call is
+   * retried, so a duplicate delivery can never double-apply.
+   */
+  requestInteraction(request: InteractionRequest): Promise<InteractionResult> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket.connected) {
+        reject(new RoomClientError('INTERNAL_ERROR', 'Not connected to the match server', true));
+        return;
+      }
+      const timeout = window.setTimeout(() => {
+        reject(new RoomClientError('INTERNAL_ERROR', 'The match server did not acknowledge the interaction', true));
+      }, 5_000);
+      this.socket.emit('interaction:request', request, (payload: unknown) => {
+        window.clearTimeout(timeout);
+        const parsed = interactionResultSchema.safeParse(payload);
+        if (!parsed.success) {
+          reject(new RoomClientError('INVALID_PAYLOAD', 'The match server returned an invalid interaction result', true));
+          return;
+        }
+        resolve(parsed.data);
+      });
+    });
   }
 
   private ensureConnected(): Promise<void> {

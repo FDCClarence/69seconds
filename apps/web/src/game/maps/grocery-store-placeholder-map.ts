@@ -1,8 +1,10 @@
 import {
   GAME,
+  GROCERY_STORE_CARTS,
   GROCERY_STORE_COLLISION,
+  GROCERY_STORE_LOOT_SPAWNS,
+  STORE_CENTRAL_SPAWN,
   type CartId,
-  type LootSpawnPoint,
 } from '@69-seconds/shared';
 
 /**
@@ -54,28 +56,15 @@ export const STORE_VISUAL_LAYERS = {
 /** The invisible collision-object layer; its rectangles are independent bodies. */
 export const STORE_COLLISION_LAYER: readonly StoreRectangle[] = GROCERY_STORE_COLLISION;
 
+/**
+ * Interaction objects come from the shared map so the drawn markers, the drawn
+ * carts, and the server's authoritative loot set can never drift apart. The
+ * client draws them; the server decides what happens at them.
+ */
 export const STORE_OBJECT_LAYER = {
-  playerSpawn: { id: 'spawn-central', x: 900, y: 600 },
-  carts: [
-    { id: 'cart-0', slot: 0, label: 'Cart 1', x: 250, y: 1_060, width: 128, height: 72 },
-    { id: 'cart-1', slot: 1, label: 'Cart 2', x: 650, y: 1_060, width: 128, height: 72 },
-    { id: 'cart-2', slot: 2, label: 'Cart 3', x: 1_150, y: 1_060, width: 128, height: 72 },
-    { id: 'cart-3', slot: 3, label: 'Cart 4', x: 1_550, y: 1_060, width: 128, height: 72 },
-  ] as const satisfies readonly StoreCart[],
-  lootSpawnPoints: [
-    { id: 'loot-apples', catalogId: 'apples', x: 150, y: 175 },
-    { id: 'loot-bread', catalogId: 'bread', x: 510, y: 175 },
-    { id: 'loot-milk', catalogId: 'milk', x: 1_290, y: 175 },
-    { id: 'loot-beans', catalogId: 'beans', x: 1_650, y: 175 },
-    { id: 'loot-pasta', catalogId: 'pasta', x: 150, y: 390 },
-    { id: 'loot-tea', catalogId: 'tea', x: 510, y: 390 },
-    { id: 'loot-soap', catalogId: 'soap', x: 1_290, y: 390 },
-    { id: 'loot-rice', catalogId: 'rice', x: 1_650, y: 390 },
-    { id: 'loot-eggs', catalogId: 'eggs', x: 150, y: 880 },
-    { id: 'loot-juice', catalogId: 'juice', x: 510, y: 880 },
-    { id: 'loot-coffee', catalogId: 'coffee', x: 1_290, y: 880 },
-    { id: 'loot-tomatoes', catalogId: 'tomatoes', x: 1_650, y: 880 },
-  ] as const satisfies readonly LootSpawnPoint[],
+  playerSpawn: STORE_CENTRAL_SPAWN,
+  carts: GROCERY_STORE_CARTS satisfies readonly StoreCart[],
+  lootSpawnPoints: GROCERY_STORE_LOOT_SPAWNS,
 } as const;
 
 export const GENERATED_GROCERY_STORE_MAP = {

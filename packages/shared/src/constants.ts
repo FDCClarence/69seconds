@@ -21,3 +21,17 @@ export const NETWORK = {
   maxInputRateHz: 30,
   interpolationDelayMs: 100,
 } as const;
+
+/**
+ * Authoritative interaction limits. Radii are validated against server-owned
+ * positions, so a client may narrow its prompt but can never widen its reach.
+ */
+export const LOOT = {
+  itemInteractionRadiusPixels: 64,
+  cartInteractionRadiusPixels: 92,
+  /** Token bucket sized for deliberate Space presses, not for held-key spam. */
+  interactionBurstCapacity: 6,
+  interactionRefillPerSecond: 6,
+  /** Retained per player so a resent request ID replays its original decision. */
+  interactionHistorySize: 32,
+} as const;

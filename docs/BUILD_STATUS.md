@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Step 7 complete: authoritative one-to-four-player movement, countdown synchronization, local prediction/reconciliation, and remote interpolation.
+Step 8 complete: authoritative loot availability, private carried inventory, and assigned-cart deposits, with atomic contested pickups, typed idempotent acknowledgements, and reconnect-safe resynchronization.
 
 ## Implemented
 
@@ -33,10 +33,10 @@ Step 7 complete: authoritative one-to-four-player movement, countdown synchroniz
 - `apps/web/src/game/maps/grocery-store-placeholder-map.ts` now provides a clearly documented generated placeholder map while Tiled art/assets are unavailable. Its rendered floor/shelf layer, invisible shelf-collision layer, and spawn/cart/loot object layer are deliberately separate so a later Tiled JSON export has a compatible boundary.
 - The generated 1,800 × 1,200 store has a labelled central spawn pad, three rows of shelf aisles, 12 data-driven item spawn points, and four slot-assigned carts along the bottom checkout lane. Slot `0`–`3` maps locally to `cart-0`–`cart-3`; the matching cart is visibly highlighted.
 - A grid route-verifier test proves the central spawn has a collision-safe path to every loot spawn and every cart interaction point. It is a layout regression check, not server collision authority.
-- `packages/shared/src/loot.ts` supplies the original, data-driven grocery catalog and pure local inventory/deposit rules. Commands express only `PICK_UP`, `DEPOSIT`, or `NO_TARGET`; their accepted/rejected result is separate, preserving the seam where Step 8 will apply server acknowledgements instead of local decisions.
-- Space selects the nearest available item inside the interaction radius, removes it from the world on successful pickup, and refuses a fifth item. At a cart, Space deposits all carried items only when that cart matches the local player's stable slot. Wrong carts, empty carts, full hands, unavailable items, and empty interaction range all produce explicit feedback.
-- In-world prompts describe the closest item/cart context, including hands-full and wrong-cart states. Phaser publishes compact carry-slot and feedback events through the typed React bridge; React renders item-labelled carry slots, deposited count, and accessible feedback without rerendering the scene each frame.
-- `R` performs a local debug reset: it restores every spawned item, clears local carry/deposit state, and updates the HUD. Ctrl remains the existing shove debug hook.
+- `packages/shared/src/loot.ts` supplies the original, data-driven grocery catalog plus pure cart-ownership rules. The Step 6 local resolver is gone: `packages/shared/src/map.ts` now owns the 12 loot spawn points and four cart definitions so the server generates the match loot set from the same data the client draws.
+- Space nominates the target the client believes is nearest and the server decides. The client can also send `INTERACT` with no target and let the server choose the nearest reachable item, then its own cart.
+- In-world prompts describe the closest item/cart context, including hands-full, wrong-cart, and not-yet-synchronized states, and they mirror the server's radius and line-of-access checks so a prompt never promises an interaction the server would refuse. Phaser publishes compact carry-slot and feedback events through the typed React bridge; React renders item-labelled carry slots, deposited count, and accessible feedback without rerendering the scene each frame.
+- The `R` local debug reset is removed, along with its key capture and HUD hint: loot is server-owned and a client can no longer restock the store. Ctrl remains the existing shove debug hook.
 - Movement tests cover idle/opposing input, diagonal normalization, equal cardinal/diagonal walk magnitude, and sprint magnitude. Lifecycle tests cover idempotent game destruction, canvas removal, and teardown when leaving the React match route.
 - Active matches now run a server-owned 30 Hz fixed-step simulation and emit compact movement snapshots at 20 Hz rather than at render frequency.
 - The client sends strict, sequenced WASD/sprint input state at a maximum 30 Hz; it never sends a trusted position or velocity. The server ignores stale/duplicate sequences, bounds queued input, and derives all displacement from shared walk/sprint constants.
@@ -48,6 +48,20 @@ Step 7 complete: authoritative one-to-four-player movement, countdown synchroniz
 - Disconnect/reconnect clears held server input and resets connection-local sequencing while preserving the existing 15-second authoritative room slot and position.
 - A synchronized React countdown overlay now appears while Phaser preloads. High-frequency movement snapshots contain only phase/time and public movement state; they do not repeat lobby, loot, inventory, or cart state.
 
+- A server-owned `MatchLootAuthority` generates the match loot set from the shared store map, assigns stable item IDs, and owns availability, carried inventories, and cart contents. An item is on a shelf, in one player's hands, or in one cart, and never in two places.
+- The authority is composed into the room simulation, so every interaction is validated against the authoritative position that the movement tick produced rather than anything the client claims.
+- Each request is validated for membership, duplicate request ID, phase and looting deadline, rate limit, target existence, interaction radius, line of access, availability, and then carry capacity or cart ownership. Cart ownership is derived from the stable room slot.
+- Contested pickups resolve atomically: the availability read and the claim happen with no `await` between them, so two or four clients racing for one item produce exactly one winner and exactly one broadcast.
+- `interaction:request` now carries a typed acknowledgement: `PICKED_UP`, `DEPOSITED`, or `REJECTED` with one of eleven stable reasons. Every acknowledgement restates the requester's authoritative carried item IDs.
+- The request schema is strict, so a modified client cannot smuggle a claimed outcome, a position, or an inventory alongside its intent. A malformed payload is answered with an `INVALID_PAYLOAD` rejection and also reported on `game:error`.
+- Committed decisions are remembered per player by request ID, bounded to the last 32. A resent request ID replays its original acknowledgement and emits no second broadcast; rejections stay re-evaluable so a legitimate retry is judged on fresh state.
+- Interaction spam is bounded by a per-player token bucket of six with a six-per-second refill. Duplicate request IDs are matched before the bucket is charged, so retries never consume budget.
+- `loot:sync` is addressed to one socket because it carries that player's private carried item IDs; it is sent at match start and on reconnection, and restores the exact world, hands, and cart contents. `loot:update` is broadcast and carries only public facts: the item taken, items entering a cart, and each player's carried *count*.
+- Carried item contents are never published to other players, and the broadcast schema rejects any attempt to include them. Cart contents are public.
+- Loot never rides in the 20 Hz movement snapshot; availability changes travel as compact events instead.
+- The Phaser client predicts a pickup only. The marker hides and a dashed carry slot appears immediately, and both are restored on refusal, on a competing player's confirmed pickup, or when no acknowledgement arrives. Deposits wait for confirmation. A resynchronization discards every prediction, because the sync already reflects every committed decision.
+- Leaving or timing out mid-match restocks whatever the player still held and clears their cart ownership, while their deposited items stay in the cart.
+
 ## Networking and prototype tuning
 
 - Walk speed: 150 pixels/second.
@@ -58,9 +72,10 @@ Step 7 complete: authoritative one-to-four-player movement, countdown synchroniz
 - Camera follow lerp: 0.10 on both axes.
 - Camera minimum zoom: 1.0, increased to `max(viewport width / 1,800, viewport height / 1,200)` on resize.
 - Local interaction feedback duration: 1,100 ms in-scene and 1,200 ms in the React overlay.
-- Loot interaction radius: 64 pixels; cart interaction radius: 92 pixels.
-- Local catalog/spawn count: 12 original placeholder items; carry limit: 4.
-- Debug reset: `R`, local-only.
+- Loot interaction radius: 64 pixels; cart interaction radius: 92 pixels. Both are validated server-side against authoritative positions, and a shelf between player and target blocks the interaction.
+- Server loot set: 12 original placeholder items from the shared map; carry limit: 4; four slot-assigned carts.
+- Interaction rate limit: token bucket of 6, refilling 6 per second, per player.
+- Idempotency history: last 32 committed decisions per player.
 - Server simulation: 30 Hz fixed step (33.33 ms).
 - Client input sampling/prediction: maximum 30 Hz fixed step.
 - Server movement snapshots: 20 Hz (50 ms average cadence).
@@ -72,18 +87,23 @@ Completed on 2026-09-02 with Node.js 22.6.0, npm 10.8.2, Phaser 4.2.1, and Vites
 
 - `npm run lint` — passed with no errors or warnings.
 - `npm run typecheck` — passed in all three workspaces.
-- `npm test` — passed 43 tests: 13 shared, 12 server, and 18 web. The command ran with permission to bind an ephemeral localhost port; all four Socket.IO integration tests passed. The 7 MySQL auth integration cases remain skipped because `TEST_DATABASE_URL` was not supplied.
-- New deterministic coverage validates strict no-position input payloads, ordered/stale sequences, countdown gating, walk/sprint displacement caps, shelf and boundary collision, safe input reset, exact tick/snapshot cadence, distinct four-player movement/spawns, initial Socket.IO countdown snapshot synchronization, acknowledged-input replay, and buffered remote interpolation.
+- `npm test` — passed 80 tests: 16 shared, 36 server, and 28 web. The command ran with permission to bind an ephemeral localhost port; all ten Socket.IO integration tests passed. The 7 MySQL auth integration cases remain skipped because `TEST_DATABASE_URL` was not supplied.
+- New deterministic loot coverage validates two-player and four-player contested pickups resolving to one winner, carry-capacity overflow, out-of-range and unknown-target claims, line-of-access refusal, wrong-cart and empty-hands deposits, re-picking a deposited item, duplicate-request-ID replay for both pickups and deposits, phase and deadline closure, rate limiting followed by a successful refilled press, reconnect resynchronization including private hands, mid-match restocking, slot-derived cart ownership across membership changes, and server-chosen nearest targets.
+- New client coverage validates the pure loot view: predicted pickups hiding a marker, confirmation, rollback on refusal, rollback on a missing acknowledgement, refusal to predict past capacity, settling a prediction a rival won, cart accumulation, restocking, stale-sequence rejection, and prediction discard on resynchronization.
+- New Socket.IO loot integration coverage validates per-socket loot sync at match start, a genuine two-client race for one item, malicious range/cart/target/payload claims, the parallel `game:error` report, reconnect restoration of hands and cart, and four clients staying consistent through pickups, deposits, and a replayed deposit.
+- Earlier deterministic coverage is unchanged: strict no-position input payloads, ordered/stale sequences, countdown gating, walk/sprint displacement caps, shelf and boundary collision, safe input reset, exact tick/snapshot cadence, distinct four-player movement/spawns, initial Socket.IO countdown snapshot synchronization, acknowledged-input replay, and buffered remote interpolation.
 - `npm run build` — passed for shared, server, and web. Vite produced the production bundle; the two existing non-failing Zod annotation-position notices and its advisory lazy-Phaser chunk-size warning remain.
 - `git diff --check` — passed.
 
 ## Known limitations
 
 - Active rooms are intentionally process-local and disappear on server restart. Production must use one application replica until a shared room store and Socket.IO adapter are designed; Redis remains deferred.
-- Loot availability, carried inventory, and cart deposits remain the local prototype. They are intentionally absent from movement snapshots; Step 8 must replace the resolver with atomic server decisions using authoritative positions for distance checks.
+- Deposited items are counted but not yet scored or presented as a result; the atomic `LOOTING → TALLY` flow that reads cart contents remains Step 10.
+- Line-of-access validation is defence in depth for future map data. The current 72-pixel shelves are thicker than the 64-pixel item reach and the carts sit clear of every shelf, so the production geometry cannot currently trigger that rejection; it is covered with an injected thin partition.
+- `attachSocketServer` and `MatchLootAuthority` accept injected spawns, carts, and collision, and `RoomRegistry` accepts an injected countdown duration. These are test seams; production always uses the shared store map and the 3-second countdown.
 - Sprint currently means the shared higher speed while Shift is held; a stamina/resource tradeoff remains the Step 9 design decision. Shove remains a phase-gated local debug hook.
 - The simulation records the authoritative 69-second looting deadline and stops movement at it, but the complete atomic `LOOTING → TALLY` result flow remains Step 10.
-- The generated grocery store, player, shelves, carts, and item markers remain original placeholders rather than Tiled/sprite assets. Collision is nevertheless server-authoritative.
+- The generated grocery store, player, shelves, carts, and item markers remain original placeholders rather than Tiled/sprite assets. Collision and loot placement are nevertheless server-authoritative.
 - Player display labels are the account username; profiles carry no separate display name or avatar yet, so the account menu shows a letter tile built from the username.
 - Browser-level multi-context Playwright coverage is still deferred; the current multiplayer lifecycle coverage uses real Socket.IO server/client connections at the server integration layer.
 - Browser network shaping is not configured, so artificial latency/jitter behavior is covered by deterministic sequence, prediction, and interpolation tests rather than an automated manual browser run.
@@ -92,4 +112,4 @@ Completed on 2026-09-02 with Node.js 22.6.0, npm 10.8.2, Phaser 4.2.1, and Vites
 
 ## Recommended next step
 
-Proceed exactly to Step 8 in `CODEX_BUILD_PROMPTS.md`: make loot availability, carried inventory, and assigned-cart deposits authoritative with atomic, idempotent server acknowledgements. Reuse authoritative player positions for interaction-distance validation and keep loot/inventory events separate from compact movement snapshots.
+Proceed exactly to Step 9 in `CODEX_BUILD_PROMPTS.md`: turn sprint into a server-owned resource and make shove a real authoritative mechanic. Reuse the existing interaction request/acknowledgement pattern for shove rather than inventing a second one, keep the shove impulse inside the shared movement integration so prediction and authority stay identical, and preserve the loot authority's atomicity when a shove interrupts a player who is carrying items.

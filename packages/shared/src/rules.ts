@@ -73,3 +73,54 @@ export function remainingPhaseMs(serverNowMs: number, phaseEndsAtMs: number | nu
   if (phaseEndsAtMs === null) return null;
   return Math.max(0, phaseEndsAtMs - serverNowMs);
 }
+
+export function distanceBetween(from: Vector2, to: Vector2): number {
+  return Math.hypot(to.x - from.x, to.y - from.y);
+}
+
+export function isWithinInteractionRadius(from: Vector2, to: Vector2, radiusPixels: number): boolean {
+  if (!Number.isFinite(from.x) || !Number.isFinite(from.y)) return false;
+  if (!Number.isFinite(to.x) || !Number.isFinite(to.y)) return false;
+  return distanceBetween(from, to) <= radiusPixels;
+}
+
+/**
+ * Liang-Barsky slab clipping for one rectangle. A segment that merely grazes a
+ * shelf edge is treated as clear so a player standing flush against an aisle
+ * end can still reach the item beside them.
+ */
+function segmentCrossesRectangle(from: Vector2, to: Vector2, rectangle: CollisionRectangle): boolean {
+  const minimumX = rectangle.x - rectangle.width / 2;
+  const maximumX = rectangle.x + rectangle.width / 2;
+  const minimumY = rectangle.y - rectangle.height / 2;
+  const maximumY = rectangle.y + rectangle.height / 2;
+  const deltaX = to.x - from.x;
+  const deltaY = to.y - from.y;
+  let entry = 0;
+  let exit = 1;
+
+  for (const [delta, origin, minimum, maximum] of [
+    [deltaX, from.x, minimumX, maximumX],
+    [deltaY, from.y, minimumY, maximumY],
+  ] as const) {
+    if (delta === 0) {
+      if (origin <= minimum || origin >= maximum) return false;
+      continue;
+    }
+    const first = (minimum - origin) / delta;
+    const second = (maximum - origin) / delta;
+    entry = Math.max(entry, Math.min(first, second));
+    exit = Math.min(exit, Math.max(first, second));
+    if (entry >= exit) return false;
+  }
+  return entry < exit;
+}
+
+/** Prevents reaching through a shelf to an item or cart on its far side. */
+export function hasLineOfAccess(
+  from: Vector2,
+  to: Vector2,
+  collision: readonly CollisionRectangle[] = GROCERY_STORE_COLLISION,
+): boolean {
+  return !collision.some((rectangle) => segmentCrossesRectangle(from, to, rectangle));
+}

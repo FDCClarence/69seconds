@@ -2,6 +2,7 @@ import type {
   ClientInput,
   GameSnapshot,
   InteractionRequest,
+  InteractionResult,
   LobbyReadyRequest,
   LobbyStartRequest,
   RoomClosed,
@@ -9,6 +10,8 @@ import type {
   RoomCreateRequest,
   RoomJoinRequest,
   RoomLeaveRequest,
+  LootSync,
+  LootUpdate,
   RoomPublicState,
   ServerError,
   ShoveRequest,
@@ -29,6 +32,8 @@ export const SERVER_EVENTS = {
   LOBBY_STATE: 'lobby:state',
   ROOM_CLOSED: 'room:closed',
   SNAPSHOT: 'state:snapshot',
+  LOOT_SYNC: 'loot:sync',
+  LOOT_UPDATE: 'loot:update',
   ERROR: 'game:error',
 } as const;
 
@@ -39,7 +44,7 @@ export interface ClientToServerEvents {
   'lobby:ready': (request: LobbyReadyRequest, acknowledge: (result: RoomCommandResult) => void) => void;
   'lobby:start': (request: LobbyStartRequest, acknowledge: (result: RoomCommandResult) => void) => void;
   'input:update': (input: ClientInput) => void;
-  'interaction:request': (request: InteractionRequest) => void;
+  'interaction:request': (request: InteractionRequest, acknowledge: (result: InteractionResult) => void) => void;
   'shove:request': (request: ShoveRequest) => void;
 }
 
@@ -47,6 +52,10 @@ export interface ServerToClientEvents {
   'lobby:state': (room: RoomPublicState) => void;
   'room:closed': (room: RoomClosed) => void;
   'state:snapshot': (snapshot: GameSnapshot) => void;
+  /** Addressed to one socket: it contains that player's private carried inventory. */
+  'loot:sync': (sync: LootSync) => void;
+  /** Broadcast to the room: committed, public loot and cart changes only. */
+  'loot:update': (update: LootUpdate) => void;
   'game:error': (error: ServerError) => void;
 }
 

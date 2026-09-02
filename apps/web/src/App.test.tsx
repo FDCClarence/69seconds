@@ -27,8 +27,6 @@ const lobby: RoomPublicState = {
     isConnected: true,
     connectionState: 'CONNECTED',
     position: { x: 0, y: 0 },
-    carriedItemIds: [],
-    depositedItemIds: [],
   }],
   serverTimeMs: 1_000,
   phaseEndsAtMs: null,
@@ -217,10 +215,14 @@ describe('authentication application', () => {
       parent.append(document.createElement('canvas'));
       callbacks.onReady?.();
       callbacks.onInventoryChange?.({
-        carriedItems: [{ id: 'loot-milk', label: 'Milk', shortLabel: 'MLK', color: '#83c6dc' }],
+        carriedItems: [
+          { id: 'loot-milk', label: 'Milk', shortLabel: 'MLK', color: '#83c6dc', pending: false },
+          { id: 'loot-bread', label: 'Bread', shortLabel: 'BRD', color: '#eebd62', pending: true },
+        ],
         depositedCount: 2,
+        synchronized: true,
       });
-      callbacks.onFeedback?.({ kind: 'PICKUP_SUCCEEDED', message: 'Picked up Milk' });
+      callbacks.onFeedback?.({ kind: 'PICKED_UP', message: 'Picked up Milk' });
       return { destroy: () => undefined };
     };
     const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
@@ -228,6 +230,7 @@ describe('authentication application', () => {
       joinRoom: vi.fn().mockResolvedValue(startedLobby),
     }), bridgeFactory);
     expect(await screen.findByLabelText('Milk in carry slot 1')).toBeTruthy();
+    expect(screen.getByLabelText('Bread in carry slot 2, awaiting confirmation')).toBeTruthy();
     expect(screen.getByLabelText('2 items deposited')).toBeTruthy();
     expect(screen.getByRole('status').textContent).toContain('Picked up Milk');
   });
