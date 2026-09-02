@@ -12,7 +12,7 @@
     "db:studio": "drizzle-kit studio",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "test:integration": "vitest run src/auth/auth.integration.test.ts"
+    "test:integration": "vitest run src/auth/auth.integration.test.ts src/rooms/room.integration.test.ts"
   },
   "dependencies": {
     "@69-seconds/shared": "*",
@@ -32,6 +32,7 @@
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
     "drizzle-kit": "^0.31.10",
+    "socket.io-client": "^4.8.1",
     "supertest": "^7.2.2",
     "tsx": "^4.20.5",
     "vitest": "^3.2.4"

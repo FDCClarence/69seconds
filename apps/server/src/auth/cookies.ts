@@ -35,7 +35,14 @@ function baseCookieOptions(config: SessionCookieConfig): CookieOptions {
 }
 
 export function readSessionToken(request: Request, config: SessionCookieConfig): string | undefined {
-  return parseCookies(request.headers.cookie).get(config.name);
+  return readSessionTokenFromCookieHeader(request.headers.cookie, config);
+}
+
+export function readSessionTokenFromCookieHeader(
+  header: string | undefined,
+  config: Pick<SessionCookieConfig, 'name'>,
+): string | undefined {
+  return parseCookies(header).get(config.name);
 }
 
 export function setSessionCookie(

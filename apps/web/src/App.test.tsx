@@ -3,11 +3,33 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { ApiError, type AuthApi } from './api.js';
+import type { RoomPublicState } from '@69-seconds/shared';
+import type { RoomClient } from './room-client.js';
 
 const player = {
   id: '477aa564-8b3f-4fa0-bf2c-c523add8d9ce',
   email: 'player@example.com',
   createdAt: '2026-09-02T00:00:00.000Z',
+};
+
+const lobby: RoomPublicState = {
+  code: 'ABC234',
+  phase: 'LOBBY',
+  hostPlayerId: player.id,
+  players: [{
+    id: player.id,
+    displayName: 'player',
+    slot: 0,
+    isHost: true,
+    isReady: false,
+    isConnected: true,
+    connectionState: 'CONNECTED',
+    position: { x: 0, y: 0 },
+    carriedItemIds: [],
+    depositedItemIds: [],
+  }],
+  serverTimeMs: 1_000,
+  phaseEndsAtMs: null,
 };
 
 function apiStub(overrides: Partial<AuthApi> = {}): AuthApi {
@@ -20,9 +42,26 @@ function apiStub(overrides: Partial<AuthApi> = {}): AuthApi {
   };
 }
 
-function renderAt(path: string, api: AuthApi) {
+function roomClientStub(overrides: Partial<RoomClient> = {}): RoomClient {
+  return {
+    connect: vi.fn(),
+    disconnect: vi.fn(),
+    subscribe: vi.fn((listeners) => {
+      listeners.onConnection('CONNECTED');
+      return () => undefined;
+    }),
+    createRoom: vi.fn().mockResolvedValue(lobby),
+    joinRoom: vi.fn().mockResolvedValue(lobby),
+    leaveRoom: vi.fn().mockResolvedValue(null),
+    setReady: vi.fn().mockResolvedValue(lobby),
+    startMatch: vi.fn().mockResolvedValue(lobby),
+    ...overrides,
+  };
+}
+
+function renderAt(path: string, api: AuthApi, rooms: RoomClient = roomClientStub()) {
   window.history.replaceState({}, '', path);
-  return render(<App api={api} />);
+  return render(<App api={api} roomClient={rooms} />);
 }
 
 afterEach(() => {
@@ -75,5 +114,52 @@ describe('authentication application', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Log out' }));
     await waitFor(() => expect(logout).toHaveBeenCalledOnce());
     expect(await screen.findByRole('heading', { name: /seconds to make it count/i })).toBeTruthy();
+  });
+
+  it('creates a private room and renders authoritative lobby status', async () => {
+    const rooms = roomClientStub();
+    renderAt('/home', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
+    await userEvent.click(await screen.findByRole('button', { name: /create room/i }));
+    expect(await screen.findByRole('heading', { name: 'Create a room.' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Generate room code' }));
+    expect(await screen.findByRole('heading', { name: 'Crew at the carts.' })).toBeTruthy();
+    expect(screen.getByText('ABC234')).toBeTruthy();
+    expect(screen.getByText('Host')).toBeTruthy();
+    expect(screen.getByText('Connected')).toBeTruthy();
+    expect(rooms.createRoom).toHaveBeenCalledOnce();
+  });
+
+  it('validates join codes before sending a join command', async () => {
+    const rooms = roomClientStub();
+    renderAt('/room/join', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
+    const code = await screen.findByLabelText('Room code');
+    await userEvent.type(code, 'OOPS');
+    await userEvent.click(screen.getByRole('button', { name: 'Join room' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('six-character room code');
+    expect(rooms.joinRoom).not.toHaveBeenCalled();
+  });
+
+  it('lets the host ready up and start only after the documented rule is met', async () => {
+    const readyLobby: RoomPublicState = {
+      ...lobby,
+      players: [{ ...lobby.players[0]!, isReady: true }],
+    };
+    const startedLobby: RoomPublicState = {
+      ...readyLobby,
+      phase: 'COUNTDOWN',
+      phaseEndsAtMs: 4_000,
+    };
+    const rooms = roomClientStub({
+      joinRoom: vi.fn().mockResolvedValue(lobby),
+      setReady: vi.fn().mockResolvedValue(readyLobby),
+      startMatch: vi.fn().mockResolvedValue(startedLobby),
+    });
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
+    await screen.findByRole('heading', { name: 'Crew at the carts.' });
+    expect((screen.getByRole('button', { name: 'Start match' }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'I’m ready' }));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Start match' }) as HTMLButtonElement).disabled).toBe(false));
+    await userEvent.click(screen.getByRole('button', { name: 'Start match' }));
+    expect((await screen.findByRole('status')).textContent).toContain('Match started');
   });
 });

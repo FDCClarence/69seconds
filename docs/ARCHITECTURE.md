@@ -48,15 +48,24 @@ The committed migrations create normalized, uniquely indexed users and expiring 
 ## Socket.IO connection and message flow
 
 1. The browser first restores its HTTP session.
-2. Socket.IO connects with cookies/credentials; connection middleware resolves the same server session and stores trusted `playerId` in socket data. Authentication will be added with Step 2/4.
-3. Room commands (added later) locate a server-owned room by code and authorize the trusted player. Clients never submit an identity to impersonate.
+2. Socket.IO connects with cookies/credentials; connection middleware resolves the same server session and stores trusted `playerId` and account email in socket data. Missing, expired, and invalid sessions fail the handshake with `UNAUTHENTICATED`.
+3. Room create/join/leave, ready, and start commands locate a server-owned in-memory room and authorize that trusted player. Clients never submit an identity, slot, readiness for another player, or host claim.
 4. During gameplay the client emits intent events: `input:update`, `interaction:request`, and `shove:request`.
 5. The transport parses each payload with its shared Zod schema, applies rate/size controls, and passes validated intent to the room simulation.
 6. The authoritative tick validates phase, movement limits, collision, proximity, inventory, loot availability, cart ownership, sprint, and shoves.
 7. The server emits increasing-sequence `state:snapshot` messages. Rejected intent produces `game:error` with a stable code and optional request correlation.
 8. The browser runtime-validates snapshots/errors, ignores stale sequences, reconciles local presentation, and never mutates canonical server state.
 
-The current handlers prove event typing and validation but intentionally do not feed a simulation. A malformed gameplay payload receives `INVALID_PAYLOAD`; a valid payload currently has no effect.
+The room handlers are implemented and return typed acknowledgement unions while broadcasting runtime-validated `lobby:state` snapshots. Gameplay input handlers still only prove typing/validation: a malformed gameplay payload receives `INVALID_PAYLOAD`; a valid payload currently has no simulation effect.
+
+## In-memory room lifecycle
+
+- `RoomRegistry` owns active codes, user-to-room membership, stable slots, host identity, readiness, phase, socket sets, reconnect timers, and abandoned-room cleanup. Socket handlers only validate/authorize/translate transport events.
+- Codes contain six cryptographically selected characters from an ambiguity-free alphabet. Allocation checks the active registry and retries collisions.
+- One user maps to at most one room and one roster entry, while that entry may own multiple socket IDs during a refresh overlap or multiple tabs.
+- Losing the last socket marks the player `RECONNECTING` for 15 seconds. The same authenticated user reattaches to the existing member. Once grace expires, the member is removed and the lowest remaining slot becomes host; an empty room closes.
+- The host may start only from `LOBBY` when every rostered player (host included) is both connected and ready. Start changes the authoritative phase to `COUNTDOWN`, sets the three-second phase deadline, and locks out new joins. The later gameplay-networking milestone owns advancing and simulating subsequent phases.
+- A periodic TTL sweep is a defensive backstop for wholly disconnected rooms, while per-player timers normally close them sooner. Registry shutdown clears timers so test/process teardown cannot mutate disposed state.
 
 ## Server authority and time
 

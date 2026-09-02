@@ -7,6 +7,8 @@ import {
   registerRequestSchema,
   gameSnapshotSchema,
   normalizeMovementVector,
+  roomCodeSchema,
+  roomCommandResultSchema,
 } from './index.js';
 
 describe('shared contracts', () => {
@@ -14,12 +16,13 @@ describe('shared contracts', () => {
     const snapshot = gameSnapshotSchema.parse({
       sequence: 1,
       room: {
-        code: 'ABC123',
+        code: 'ABC234',
         phase: 'LOBBY',
         hostPlayerId: 'player-1',
         players: [{
           id: 'player-1', displayName: 'Clerk', slot: 0, isHost: true,
           isReady: false, isConnected: true, position: { x: 0, y: 0 },
+          connectionState: 'CONNECTED',
           carriedItemIds: [], depositedItemIds: [],
         }],
         serverTimeMs: 1_000,
@@ -28,6 +31,21 @@ describe('shared contracts', () => {
       loot: [],
     });
     expect(snapshot.room.phase).toBe('LOBBY');
+  });
+
+  it('normalizes readable room codes and validates typed command results', () => {
+    expect(roomCodeSchema.parse(' ab2cd3 ')).toBe('AB2CD3');
+    expect(() => roomCodeSchema.parse('ABC10O')).toThrow();
+    const result = roomCommandResultSchema.parse({
+      ok: false,
+      error: {
+        code: 'ROOM_FULL',
+        message: 'The room is full',
+        event: 'room:join',
+        retryable: false,
+      },
+    });
+    expect(result.ok).toBe(false);
   });
 
   it('rejects contradictory movement payload shapes', () => {

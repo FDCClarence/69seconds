@@ -4,7 +4,7 @@
 
 69 Seconds is a private-room browser game for one to four players. A match covers one grocery-store looting round: players leave a shared central spawn, collect shared items, carry at most four at once, deposit them in their assigned carts, and see a tally after exactly 69 server-timed seconds. Later resource-management phases are not part of this version.
 
-This document defines the intended first playable. The current scaffold implements contracts and pure rule primitives only.
+This document defines the intended first playable. Authentication and the private-room lobby lifecycle are implemented; Phaser gameplay and authoritative match simulation remain later milestones.
 
 ## Match lifecycle
 
@@ -17,8 +17,12 @@ Phase transitions are one-way for a match: `LOBBY → COUNTDOWN → LOOTING → 
 
 ## Players, rooms, and spawning
 
-- A private room contains one to four distinct authenticated players in the finished first playable.
-- The room creator initially hosts. Host departure/migration and readiness requirements will be fixed in the room-lifecycle step.
+- A private room contains one to four distinct authenticated users. Multiple sockets or a refreshed tab for one authenticated user never create another roster entry.
+- Creation returns a six-character uppercase code generated with cryptographic randomness. Codes omit visually ambiguous `0`, `1`, `I`, `L`, and `O`; the server checks active-room collisions before issuing one.
+- The room creator initially hosts. Before starting, every rostered player—including the host—must be connected and ready. A one-player room is valid under the same rule. Only the current host may start.
+- A disconnected player remains on the roster as `RECONNECTING` for 15 seconds. Reconnecting with the same authenticated identity during that grace period restores the same slot, readiness, and host status.
+- An explicit leave removes the player immediately. A disconnect that outlasts the grace period also removes the player. If the host is removed, host status migrates deterministically to the remaining player with the lowest stable slot; a room with no remaining players closes.
+- New joins are rejected after the host starts. Started-room members may still reconnect as themselves during their grace window.
 - Each player receives a stable slot from 0–3 and the matching cart. Four carts sit near the bottom of the map.
 - Players spawn near the grocery store center at distinct collision-safe points.
 - The server owns membership, slots, host identity, phase, spawn positions, and connection status. A client cannot claim these values.
@@ -73,6 +77,14 @@ Exact item values, spawn table, interaction radius, sprint resource constraints,
 - Malformed, unauthorized, impossible, and excessive network messages are rejected with stable typed errors and do not crash the process.
 - Critical pure rules, room lifecycle, authority checks, network validation, and browser flow have automated coverage at their appropriate layers.
 
-## Explicitly out of scope for the scaffold
+## Current room-lifecycle error contract
 
-Authentication, database schemas, a complete room manager, Phaser scenes, map/assets, simulation ticks, loot resolution, scoring, reconnection, and finished UI are not implemented in Step 1. PostgreSQL/Drizzle, secure cookie sessions, Tiled JSON, Phaser 4, and Playwright remain architectural targets for later steps.
+- A malformed code or command payload returns `INVALID_PAYLOAD`; a well-formed code with no active room returns `ROOM_NOT_FOUND`.
+- A fifth distinct user receives `ROOM_FULL`, and a new user joining after start receives `MATCH_ALREADY_STARTED`.
+- An unauthenticated socket handshake receives `UNAUTHENTICATED`. A user already belonging to a different room receives `ALREADY_IN_ROOM`.
+- Non-host start attempts receive `FORBIDDEN`; a host start before the readiness rule is met receives `PLAYERS_NOT_READY`.
+- Lobby-only changes after start receive `INVALID_PHASE` or `MATCH_ALREADY_STARTED` as appropriate.
+
+## Explicitly out of scope after the room milestone
+
+Phaser scenes, map/assets, simulation ticks, loot resolution, scoring, and durable room recovery are not implemented yet. PostgreSQL/Drizzle stores accounts and sessions, but rooms remain intentionally in one process and are lost on server restart. Tiled JSON, Phaser 4, and Playwright remain architectural targets for later steps.

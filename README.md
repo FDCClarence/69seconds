@@ -1,6 +1,6 @@
 # 69 Seconds
 
-Foundation for a browser-based, server-authoritative multiplayer grocery scramble. The repository includes shared network/domain contracts, a React shell, an Express/Socket.IO server, and PostgreSQL-backed account/session authentication. Rooms and complete gameplay are not implemented yet.
+Foundation for a browser-based, server-authoritative multiplayer grocery scramble. The repository includes shared network/domain contracts, a React authentication and lobby client, an Express/Socket.IO server with private in-memory rooms, and PostgreSQL-backed account/session authentication. Phaser gameplay is not implemented yet.
 
 ## Prerequisites
 
@@ -41,6 +41,12 @@ Registration accepts `{ "email": string, "password": string }`; passwords must b
 
 The cookie contains a random opaque value only. The database stores its SHA-256 digest, and password hashes use Argon2id. In development the cookie is HTTP-only, host-only, `SameSite=Lax`, and not `Secure` so localhost HTTP works. `NODE_ENV=production` makes it `Secure` and defaults its name to the `__Host-`-prefixed `__Host-69s_session`. Production defaults to one trusted proxy hop for Railway; local/test defaults to none. `WEB_ORIGIN` is an exact comma-separated allowlist and never accepts `*`.
 
+## Private rooms
+
+The authenticated React home links to Create Room and Join Room views. Socket.IO reuses the session cookie during its handshake; clients never send a player ID or host claim. Room commands are `room:create`, `room:join`, `room:leave`, `lobby:ready`, and `lobby:start`, with authoritative state broadcast as `lobby:state`.
+
+Rooms hold one to four distinct users in server memory. Codes are six readable characters, a disconnected member has a 15-second reconnection grace, and host status migrates to the remaining lowest slot after a host is actually removed. Starting requires every rostered player—including the host—to be connected and ready. Active rooms do not survive a server restart, and production must remain at one application replica until shared room infrastructure is added.
+
 ## Commands
 
 | Command | Purpose |
@@ -52,7 +58,7 @@ The cookie contains a random opaque value only. The database stores its SHA-256 
 | `npm test` | Run all workspace tests |
 | `npm run db:generate` | Generate a migration after an intentional Drizzle schema change |
 | `npm run db:migrate` | Apply committed migrations to `DATABASE_URL` |
-| `TEST_DATABASE_URL=... npm run test:integration -w @69-seconds/server` | Run real-PostgreSQL auth tests |
+| `npm run test:integration -w @69-seconds/server` | Run Socket.IO room integration tests (and PostgreSQL auth tests when `TEST_DATABASE_URL` is set) |
 
 Target one workspace with npm's `-w` flag, for example `npm test -w @69-seconds/shared`.
 

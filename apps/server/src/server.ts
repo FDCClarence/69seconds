@@ -9,17 +9,20 @@ const database = createDatabase(config.databaseUrl);
 const auth = new AuthService(database.db, config.cookie.ttlMs);
 const app = createApp({ config, auth });
 const httpServer = createServer(app);
-attachSocketServer(httpServer, config.webOrigins);
+const sockets = attachSocketServer(httpServer, {
+  webOrigins: config.webOrigins,
+  auth,
+  cookie: config.cookie,
+});
 
 httpServer.listen(config.port, () => {
   console.log(`69 Seconds server listening on http://localhost:${config.port}`);
 });
 
 async function shutdown(): Promise<void> {
-  httpServer.close(async () => {
-    await database.pool.end();
-    process.exit(0);
-  });
+  await sockets.close();
+  await database.pool.end();
+  process.exit(0);
 }
 
 process.on('SIGINT', () => { void shutdown(); });
