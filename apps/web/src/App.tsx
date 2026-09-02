@@ -1,6 +1,8 @@
 import { GAME, roomCodeSchema, type PublicUser, type RoomPublicState } from '@69-seconds/shared';
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { authApi, ApiError, type AuthApi } from './api.js';
+import { MatchGame } from './game/react/MatchGame.js';
+import type { GroceryGameFactory } from './game/types.js';
 import {
   createRoomClient,
   RoomClientError,
@@ -16,6 +18,7 @@ type FormMode = 'login' | 'register';
 export interface AppProps {
   api?: AuthApi;
   roomClient?: RoomClient;
+  gameFactory?: GroceryGameFactory;
 }
 
 function routeFromPath(pathname: string): Route {
@@ -69,7 +72,7 @@ function roomErrorMessage(error: unknown): string {
   return 'The room signal dropped. Please try again.';
 }
 
-export function App({ api = authApi, roomClient: suppliedRoomClient }: AppProps) {
+export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory }: AppProps) {
   const [rooms] = useState<RoomClient>(() => suppliedRoomClient ?? createRoomClient());
   const [route, setRoute] = useState<Route>(() => routeFromPath(window.location.pathname));
   const [auth, setAuth] = useState<AuthState>({ status: 'loading' });
@@ -189,6 +192,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient }: AppProps)
         onStart={async () => { setRoom(await rooms.startMatch()); }}
         onLeave={leaveRoom}
         onBack={() => navigate('/home')}
+        gameFactory={gameFactory}
       />;
     }
   }
@@ -308,7 +312,7 @@ function JoinRoom({ onJoin, onBack }: { onJoin: (code: string) => Promise<void>;
   return <RoomShell onBack={onBack}><section className="room-card room-entry" aria-labelledby="join-room-title"><p className="kicker">Find your crew</p><h1 id="join-room-title">Join by code.</h1><form onSubmit={(event) => void submit(event)}><label htmlFor="room-code">Room code</label><input id="room-code" className="room-code-input" value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} maxLength={GAME.roomCodeLength} autoComplete="off" autoCapitalize="characters" spellCheck={false} />{error && <p className="notice notice-error" role="alert">{error}</p>}<button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Finding room…' : 'Join room'}</button></form></section></RoomShell>;
 }
 
-function Lobby({ code, room, user, connection, onJoin, onReady, onStart, onLeave, onBack }: { code: string; room: RoomPublicState | null; user: PublicUser; connection: SocketConnectionState; onJoin: (code: string) => Promise<void>; onReady: (ready: boolean) => Promise<void>; onStart: () => Promise<void>; onLeave: () => Promise<void>; onBack: () => void }) {
+function Lobby({ code, room, user, connection, onJoin, onReady, onStart, onLeave, onBack, gameFactory }: { code: string; room: RoomPublicState | null; user: PublicUser; connection: SocketConnectionState; onJoin: (code: string) => Promise<void>; onReady: (ready: boolean) => Promise<void>; onStart: () => Promise<void>; onLeave: () => Promise<void>; onBack: () => void; gameFactory: GroceryGameFactory | undefined }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -332,5 +336,8 @@ function Lobby({ code, room, user, connection, onJoin, onReady, onStart, onLeave
   const isHost = room.hostPlayerId === user.id;
   const canStart = room.players.every((player) => player.isConnected && player.isReady);
   const lobbyOpen = room.phase === 'LOBBY';
+  if (!lobbyOpen) {
+    return <MatchGame phase={room.phase} roomCode={room.code} onLeave={onLeave} gameFactory={gameFactory} />;
+  }
   return <main className="room-shell lobby-shell"><header className="topbar"><BrandMark /><div className={`socket-status status-${connection.toLowerCase()}`}><span aria-hidden="true" />{connection === 'CONNECTED' ? 'Live' : connection.toLowerCase()}</div></header><section className="lobby-heading"><div><p className="kicker">Private room</p><h1>Crew at the carts.</h1></div><div className="room-code-display"><span>Room code</span><strong>{room.code}</strong></div></section>{error && <p className="notice notice-error lobby-error" role="alert">{error}</p>}<section className="lobby-grid"><div className="roster-panel"><div className="panel-heading"><h2>Players</h2><span>{room.players.length} / {GAME.maxPlayers}</span></div><ol className="player-roster">{room.players.map((player) => <li key={player.id} className={!player.isConnected ? 'player-reconnecting' : ''}><span className="player-slot">{player.slot + 1}</span><span className="player-name"><strong>{player.displayName}{player.id === user.id ? ' (you)' : ''}</strong><small>{player.isHost ? 'Host' : 'Crew member'}</small></span><span className={`connection-pill ${player.connectionState.toLowerCase()}`}>{player.connectionState === 'CONNECTED' ? 'Connected' : 'Reconnecting'}</span><span className={`ready-pill ${player.isReady ? 'is-ready' : ''}`}>{player.isReady ? 'Ready' : 'Not ready'}</span></li>)}</ol></div><aside className="lobby-controls"><p className="form-overline">Start rule</p><h2>Everyone checks in.</h2><p>Every rostered player—including the host—must be connected and ready. Only the current host can start.</p>{lobbyOpen ? <><button className={`button ${self?.isReady ? 'button-quiet' : 'button-primary'}`} type="button" disabled={busy || connection !== 'CONNECTED'} onClick={() => void act(() => onReady(!self?.isReady))}>{self?.isReady ? 'Mark not ready' : 'I’m ready'}</button>{isHost && <button className="button start-button" type="button" disabled={busy || !canStart || connection !== 'CONNECTED'} onClick={() => void act(onStart)}>Start match</button>}</> : <div className="match-started" role="status"><strong>Match started.</strong><span>The roster is locked and the countdown is server-owned.</span></div>}<button className="text-button leave-room" type="button" disabled={busy} onClick={() => void act(onLeave)}>Leave room</button></aside></section></main>;
 }

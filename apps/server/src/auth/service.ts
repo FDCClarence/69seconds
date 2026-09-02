@@ -1,6 +1,6 @@
 import { hash, verify } from '@node-rs/argon2';
 import { and, eq, gt } from 'drizzle-orm';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { Database } from '../db/client.js';
 import { sessions, users, type UserRow } from '../db/schema.js';
 
@@ -37,8 +37,10 @@ export class AuthService {
 
     try {
       return await this.db.transaction(async (transaction) => {
-        const inserted = await transaction.insert(users).values({ email, passwordHash }).returning();
-        const user = inserted[0];
+        // MySQL has no INSERT ... RETURNING, so the id is generated here and the row is read back.
+        const id = randomUUID();
+        await transaction.insert(users).values({ id, email, passwordHash });
+        const user = await transaction.query.users.findFirst({ where: eq(users.id, id) });
         if (!user) throw new Error('User insert returned no row');
         const session = await this.createSession(user.id, transaction);
         return { user, session };
@@ -97,6 +99,12 @@ export class AuthService {
 
 function isUniqueViolation(error: unknown): boolean {
   if (typeof error !== 'object' || error === null) return false;
-  const candidate = error as { code?: unknown; cause?: { code?: unknown } };
-  return candidate.code === '23505' || candidate.cause?.code === '23505';
+  const candidate = error as {
+    code?: unknown;
+    errno?: unknown;
+    cause?: { code?: unknown; errno?: unknown };
+  };
+  // MySQL reports a duplicate key as ER_DUP_ENTRY (errno 1062).
+  return candidate.code === 'ER_DUP_ENTRY' || candidate.errno === 1062
+    || candidate.cause?.code === 'ER_DUP_ENTRY' || candidate.cause?.errno === 1062;
 }

@@ -8,6 +8,7 @@ export const GAME = {
   abandonedRoomTtlMs: 30 * 60_000,
   walkSpeedPixelsPerSecond: 150,
   sprintSpeedPixelsPerSecond: 235,
+  playerCollisionRadiusPixels: 15,
 } as const;
 
 export const ROOM_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';

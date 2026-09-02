@@ -5,6 +5,7 @@ import { App } from './App.js';
 import { ApiError, type AuthApi } from './api.js';
 import type { RoomPublicState } from '@69-seconds/shared';
 import type { RoomClient } from './room-client.js';
+import type { GroceryGameFactory } from './game/types.js';
 
 const player = {
   id: '477aa564-8b3f-4fa0-bf2c-c523add8d9ce',
@@ -59,9 +60,15 @@ function roomClientStub(overrides: Partial<RoomClient> = {}): RoomClient {
   };
 }
 
-function renderAt(path: string, api: AuthApi, rooms: RoomClient = roomClientStub()) {
+const testGameFactory: GroceryGameFactory = (parent, callbacks) => {
+  parent.append(document.createElement('canvas'));
+  callbacks.onReady?.();
+  return { destroy: () => undefined };
+};
+
+function renderAt(path: string, api: AuthApi, rooms: RoomClient = roomClientStub(), gameFactory = testGameFactory) {
   window.history.replaceState({}, '', path);
-  return render(<App api={api} roomClient={rooms} />);
+  return render(<App api={api} roomClient={rooms} gameFactory={gameFactory} />);
 }
 
 afterEach(() => {
@@ -160,6 +167,23 @@ describe('authentication application', () => {
     await userEvent.click(screen.getByRole('button', { name: 'I’m ready' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Start match' }) as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(screen.getByRole('button', { name: 'Start match' }));
-    expect((await screen.findByRole('status')).textContent).toContain('Match started');
+    expect(await screen.findByRole('application', { name: /grocery store prototype/i })).toBeTruthy();
+    expect(screen.getByText('COUNTDOWN')).toBeTruthy();
+  });
+
+  it('destroys the local Phaser instance when leaving the match route', async () => {
+    const destroy = vi.fn();
+    const gameFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.append(document.createElement('canvas'));
+      callbacks.onReady?.();
+      return { destroy };
+    };
+    const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
+    const rooms = roomClientStub({ joinRoom: vi.fn().mockResolvedValue(startedLobby) });
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms, gameFactory);
+    await screen.findByRole('application', { name: /grocery store prototype/i });
+    await userEvent.click(screen.getByRole('button', { name: 'Leave test' }));
+    await waitFor(() => expect(destroy).toHaveBeenCalledWith(true));
+    expect(await screen.findByRole('heading', { name: 'Ready when your crew is.' })).toBeTruthy();
   });
 });

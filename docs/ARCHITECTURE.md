@@ -24,7 +24,7 @@ Owns React routes/screens, HTTP and Socket.IO clients, session UI state, accessi
 
 | State | Canonical owner | Durable? | Client behavior |
 | --- | --- | --- | --- |
-| Account/session | Server + PostgreSQL | Yes | Restore through HTTP cookie session |
+| Account/session | Server + MySQL | Yes | Restore through HTTP cookie session |
 | Room membership/host/readiness | Server room registry | No (MVP) | Render snapshots; send intents |
 | Phase and phase deadline | Server match clock | No | Estimate display from server time |
 | Positions and sprint constraints | Server simulation | No | Predict/interpolate, then reconcile |
@@ -38,7 +38,7 @@ Active rooms live in one server process for the MVP. Redis, horizontal match dis
 
 1. React sends register/login/logout/current-user requests over HTTPS with credentials included.
 2. Express validates JSON bodies against shared or server-owned request schemas.
-3. The auth service reads/writes PostgreSQL through Drizzle, hashes passwords with Argon2id, and creates 256-bit opaque server-side session tokens. PostgreSQL stores only SHA-256 token digests.
+3. The auth service reads/writes MySQL through Drizzle, hashes passwords with Argon2id, and creates 256-bit opaque server-side session tokens. MySQL stores only SHA-256 token digests.
 4. Express sets a host-only, HTTP-only, Secure-in-production, deliberately configured SameSite cookie. JavaScript never reads a credential token. Login deletes the presented session before issuing a replacement.
 5. Protected HTTP middleware resolves the cookie to a trusted user and attaches that identity to the request.
 6. Responses expose only public user data and stable typed error codes.

@@ -15,6 +15,26 @@ export function normalizeMovementVector(vector: Vector2): Vector2 {
   return { x: vector.x / magnitude, y: vector.y / magnitude };
 }
 
+export interface MovementInput {
+  up: boolean;
+  down: boolean;
+  left: boolean;
+  right: boolean;
+}
+
+export function movementAxis(input: MovementInput): Vector2 {
+  return {
+    x: Number(input.right) - Number(input.left),
+    y: Number(input.down) - Number(input.up),
+  };
+}
+
+export function movementVelocity(input: MovementInput, sprinting: boolean): Vector2 {
+  const direction = normalizeMovementVector(movementAxis(input));
+  const speed = sprinting ? GAME.sprintSpeedPixelsPerSecond : GAME.walkSpeedPixelsPerSecond;
+  return { x: direction.x * speed, y: direction.y * speed };
+}
+
 export function remainingPhaseMs(serverNowMs: number, phaseEndsAtMs: number | null): number | null {
   if (phaseEndsAtMs === null) return null;
   return Math.max(0, phaseEndsAtMs - serverNowMs);

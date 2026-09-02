@@ -12,6 +12,7 @@
   "dependencies": {
     "@69-seconds/shared": "*",
     "@vitejs/plugin-react": "4.3.4",
+    "phaser": "^4.2.1",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "socket.io-client": "^4.8.1",

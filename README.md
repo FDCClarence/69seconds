@@ -1,30 +1,32 @@
 # 69 Seconds
 
-Foundation for a browser-based, server-authoritative multiplayer grocery scramble. The repository includes shared network/domain contracts, a React authentication and lobby client, an Express/Socket.IO server with private in-memory rooms, and PostgreSQL-backed account/session authentication. Phaser gameplay is not implemented yet.
+Foundation for a browser-based, server-authoritative multiplayer grocery scramble. The repository includes shared network/domain contracts, a React authentication and lobby client, an Express/Socket.IO server with private in-memory rooms, and MySQL-backed account/session authentication. Phaser gameplay is not implemented yet.
 
 ## Prerequisites
 
 - Node.js 20.19 or newer
 - npm 10 or newer
-- PostgreSQL 16 (the provided Docker Compose service is suitable locally)
+- MySQL 8.4 (the provided Docker Compose service is suitable locally)
 
 ## Setup
 
 ```bash
 npm install
 docker compose up -d db
-docker compose exec db createdb -U postgres sixtynine_seconds_test
+docker compose exec db mysql -uroot -pmysql -e "CREATE DATABASE IF NOT EXISTS sixtynine_seconds_test"
 cp apps/server/.env.example apps/server/.env
 cp apps/web/.env.example apps/web/.env
 npm run db:migrate
 npm run dev
 ```
 
-The `createdb` command is a one-time test-database setup and reports that the database already exists on later runs. Development uses `sixtynine_seconds_dev`; integration tests deliberately refuse a `TEST_DATABASE_URL` whose database name does not contain `test`.
+The `CREATE DATABASE` command is a one-time test-database setup and is a no-op on later runs. Development uses `sixtynine_seconds_dev`; integration tests deliberately refuse a `TEST_DATABASE_URL` whose database name does not contain `test`.
 
 The web app runs at `http://localhost:5173`; Express and Socket.IO run at `http://localhost:3001`. Check the server with `GET http://localhost:3001/api/health`.
 
 Vite loads `apps/web/.env`; server scripts load `apps/server/.env` through `dotenv`. `DATABASE_URL` is required so the server fails fast instead of silently using an unintended database.
+
+The server talks to MySQL through `mysql2`. Identifiers are application-generated UUIDs in `CHAR(36)` columns because MySQL has no `uuid` type and no `INSERT ... RETURNING`. Timestamps are `DATETIME(3)`, which carries no zone, so the pool sets `timezone: 'Z'` and pins every connection to `SET time_zone = '+00:00'`; both are required for correct UTC round-trips when the Node process or the database server is not itself on UTC. `users.email` is `VARCHAR(255)` under MySQL's default case-insensitive collation, which is compatible with the emails the server already lowercases before storing.
 
 ## Authentication API
 
@@ -58,7 +60,7 @@ Rooms hold one to four distinct users in server memory. Codes are six readable c
 | `npm test` | Run all workspace tests |
 | `npm run db:generate` | Generate a migration after an intentional Drizzle schema change |
 | `npm run db:migrate` | Apply committed migrations to `DATABASE_URL` |
-| `npm run test:integration -w @69-seconds/server` | Run Socket.IO room integration tests (and PostgreSQL auth tests when `TEST_DATABASE_URL` is set) |
+| `npm run test:integration -w @69-seconds/server` | Run Socket.IO room integration tests (and MySQL auth tests when `TEST_DATABASE_URL` is set) |
 
 Target one workspace with npm's `-w` flag, for example `npm test -w @69-seconds/shared`.
 
@@ -66,8 +68,8 @@ Target one workspace with npm's `-w` flag, for example `npm test -w @69-seconds/
 
 - `apps/web` — React/Vite shell and, later, the React-to-Phaser game host.
 - `apps/server` — Express/Socket.IO process and future authoritative simulation.
-- `apps/server/drizzle` — committed PostgreSQL migrations and Drizzle migration metadata.
+- `apps/server/drizzle` — committed MySQL migrations and Drizzle migration metadata.
 - `packages/shared` — framework-free constants, schemas, event maps, state types, and pure rules.
-- `docs` — gameplay specification, architecture decisions, and implementation handoff.
+- `docs` — gameplay specification, architecture decisions, deployment runbook, and implementation handoff.
 
-Read [GAME_SPEC.md](docs/GAME_SPEC.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), and [BUILD_STATUS.md](docs/BUILD_STATUS.md) before continuing implementation.
+Read [GAME_SPEC.md](docs/GAME_SPEC.md), [ARCHITECTURE.md](docs/ARCHITECTURE.md), and [BUILD_STATUS.md](docs/BUILD_STATUS.md) before continuing implementation. [DEPLOYMENT.md](docs/DEPLOYMENT.md) covers shipping the server and MySQL to Railway and the client to Cloudflare Pages.

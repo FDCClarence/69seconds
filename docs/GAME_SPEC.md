@@ -87,4 +87,4 @@ Exact item values, spawn table, interaction radius, sprint resource constraints,
 
 ## Explicitly out of scope after the room milestone
 
-Phaser scenes, map/assets, simulation ticks, loot resolution, scoring, and durable room recovery are not implemented yet. PostgreSQL/Drizzle stores accounts and sessions, but rooms remain intentionally in one process and are lost on server restart. Tiled JSON, Phaser 4, and Playwright remain architectural targets for later steps.
+Phaser scenes, map/assets, simulation ticks, loot resolution, scoring, and durable room recovery are not implemented yet. MySQL/Drizzle stores accounts and sessions, but rooms remain intentionally in one process and are lost on server restart. Tiled JSON, Phaser 4, and Playwright remain architectural targets for later steps.

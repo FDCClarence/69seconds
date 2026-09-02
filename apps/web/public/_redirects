@@ -1,0 +1,3 @@
+# The client resolves /login, /home, and /room/* from window.location.pathname,
+# so every deep link must be served the SPA shell instead of a Cloudflare Pages 404.
+/*    /index.html   200
