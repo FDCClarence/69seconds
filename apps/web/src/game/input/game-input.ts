@@ -19,7 +19,8 @@ interface GameplayKeys {
  */
 export interface InputFrame {
   movement: MovementInput;
-  sprinting: boolean;
+  /** Raw intent from the Shift key; effective sprinting is resolved elsewhere. */
+  sprintHeld: boolean;
 }
 
 export class GameInput {
@@ -48,7 +49,7 @@ export class GameInput {
       left: this.keys.left.isDown,
       right: this.keys.right.isDown,
     };
-    return { movement, sprinting: this.keys.sprint.isDown };
+    return { movement, sprintHeld: this.keys.sprint.isDown };
   }
 
   readAction(): GameAction | null {

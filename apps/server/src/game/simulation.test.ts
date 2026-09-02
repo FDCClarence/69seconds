@@ -202,6 +202,17 @@ describe('server-owned sprint resource', () => {
     expect(standing.stamina).toBeGreaterThan(sprinting.stamina);
   });
 
+  it('clears effective sprinting when the looting deadline closes', () => {
+    const simulation = new AuthoritativeRoomSimulation(room());
+    simulation.submitInput('player-0', input(0, { sprint: true }));
+    simulation.tick(2_000);
+    expect(playerIn(simulation, 2_000, 'player-0').sprinting).toBe(true);
+
+    const lootingEndsAt = 2_000 + GAME.lootingDurationMs;
+    simulation.tick(lootingEndsAt);
+    expect(playerIn(simulation, lootingEndsAt, 'player-0').sprinting).toBe(false);
+  });
+
   it('drops an exhausted player to walking speed instead of stopping them', () => {
     const simulation = new AuthoritativeRoomSimulation(room());
     simulation.tick(2_000);

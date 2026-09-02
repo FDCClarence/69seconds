@@ -161,7 +161,7 @@ export class GroceryStoreScene extends Phaser.Scene {
       this.fixedAccumulatorMs -= fixedStepMs;
       // The raw Shift goes on the wire; whether it counts as sprinting is the
       // server's call, and this client only predicts the same decision locally.
-      const input = this.callbacks.sendInput?.(frame.movement, frame.sprinting) ?? null;
+      const input = this.callbacks.sendInput?.(frame.movement, frame.sprintHeld) ?? null;
       if (input && this.phase === 'LOOTING') {
         this.pendingInputs.push(input);
         if (this.pendingInputs.length > NETWORK.maxInputRateHz * 4) this.pendingInputs.shift();
@@ -171,7 +171,7 @@ export class GroceryStoreScene extends Phaser.Scene {
       const resolved = resolveSprint(
         this.sprint,
         frame.movement,
-        frame.sprinting && !recovering,
+        frame.sprintHeld && !recovering,
         1 / NETWORK.simulationTickRateHz,
       );
       this.sprint = resolved.state;
