@@ -15,6 +15,8 @@ import type {
   RoomPublicState,
   ServerError,
   ShoveRequest,
+  ShoveLanded,
+  ShoveResult,
 } from './schemas.js';
 
 export const CLIENT_EVENTS = {
@@ -34,6 +36,7 @@ export const SERVER_EVENTS = {
   SNAPSHOT: 'state:snapshot',
   LOOT_SYNC: 'loot:sync',
   LOOT_UPDATE: 'loot:update',
+  SHOVE_LANDED: 'shove:landed',
   ERROR: 'game:error',
 } as const;
 
@@ -45,7 +48,7 @@ export interface ClientToServerEvents {
   'lobby:start': (request: LobbyStartRequest, acknowledge: (result: RoomCommandResult) => void) => void;
   'input:update': (input: ClientInput) => void;
   'interaction:request': (request: InteractionRequest, acknowledge: (result: InteractionResult) => void) => void;
-  'shove:request': (request: ShoveRequest) => void;
+  'shove:request': (request: ShoveRequest, acknowledge: (result: ShoveResult) => void) => void;
 }
 
 export interface ServerToClientEvents {
@@ -56,6 +59,8 @@ export interface ServerToClientEvents {
   'loot:sync': (sync: LootSync) => void;
   /** Broadcast to the room: committed, public loot and cart changes only. */
   'loot:update': (update: LootUpdate) => void;
+  /** Broadcast to the room: one committed shove, with the target's authoritative landing spot. */
+  'shove:landed': (event: ShoveLanded) => void;
   'game:error': (error: ServerError) => void;
 }
 

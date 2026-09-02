@@ -1,8 +1,16 @@
 import { GAME, type RoomPublicState } from '@69-seconds/shared';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CarryHudState, GameFeedback, GroceryGameFactory } from '../types.js';
+import type { CarryHudState, GameFeedback, GroceryGameFactory, SprintHudState } from '../types.js';
 import { mountGroceryGame } from './game-lifecycle.js';
 import type { RoomClient } from '../../room-client.js';
+
+const READY_SPRINT: SprintHudState = {
+  fraction: 1,
+  sprinting: false,
+  exhausted: false,
+  shoveCooldownFraction: 0,
+  recovering: false,
+};
 
 export function MatchGame({
   room,
@@ -21,6 +29,7 @@ export function MatchGame({
   const [ready, setReady] = useState(false);
   const [feedback, setFeedback] = useState<GameFeedback | null>(null);
   const [inventory, setInventory] = useState<CarryHudState>({ carriedItems: [], depositedCount: 0, synchronized: false });
+  const [sprint, setSprint] = useState<SprintHudState>(READY_SPRINT);
   const [displayPhase, setDisplayPhase] = useState(room.phase);
   const [countdown, setCountdown] = useState<number | null>(null);
   const initialRoom = useRef(room);
@@ -31,10 +40,6 @@ export function MatchGame({
     window.clearTimeout(actionTimer.current);
     actionTimer.current = window.setTimeout(() => setFeedback(null), 1_200);
   }, []);
-  const showAction = useCallback(() => {
-    showFeedback({ kind: 'SHOVE_DEBUG', message: 'SHOVE DEBUG HOOK' });
-  }, [showFeedback]);
-
   useEffect(() => setDisplayPhase(room.phase), [room.phase]);
   useEffect(() => {
     if (displayPhase !== 'COUNTDOWN' || room.phaseEndsAtMs === null) {
@@ -53,15 +58,16 @@ export function MatchGame({
     if (!parent) return undefined;
     setReady(false);
     setInventory({ carriedItems: [], depositedCount: 0, synchronized: false });
+    setSprint(READY_SPRINT);
     let cleanup: (() => void) | undefined;
     let cancelled = false;
     void (async () => {
       const factory = gameFactory ?? (await import('../create-grocery-game.js')).createGroceryGame;
       if (cancelled) return;
       cleanup = mountGroceryGame(parent, factory, {
-        onAction: showAction,
         onFeedback: showFeedback,
         onInventoryChange: setInventory,
+        onSprintChange: setSprint,
         onReady: () => setReady(true),
         assignedCartSlot: initialRoom.current.players.find((player) => player.id === localPlayerId)?.slot ?? 0,
         localPlayerId,
@@ -73,8 +79,12 @@ export function MatchGame({
         requestInteraction: (request) => roomClient.requestInteraction
           ? roomClient.requestInteraction(request)
           : Promise.reject(new Error('This room client cannot request interactions')),
+        requestShove: (request) => roomClient.requestShove
+          ? roomClient.requestShove(request)
+          : Promise.reject(new Error('This room client cannot request shoves')),
         subscribeLootSync: (listener) => roomClient.subscribeLootSync?.(listener) ?? (() => undefined),
         subscribeLootUpdates: (listener) => roomClient.subscribeLootUpdates?.(listener) ?? (() => undefined),
+        subscribeShoveLanded: (listener) => roomClient.subscribeShoveLanded?.(listener) ?? (() => undefined),
         onPhaseChange: setDisplayPhase,
       });
     })();
@@ -83,7 +93,7 @@ export function MatchGame({
       window.clearTimeout(actionTimer.current);
       cleanup?.();
     };
-  }, [gameFactory, localPlayerId, roomClient, showAction, showFeedback]);
+  }, [gameFactory, localPlayerId, roomClient, showFeedback]);
 
   return <main className="game-route">
     <div
@@ -104,6 +114,35 @@ export function MatchGame({
       <div className="game-controls" aria-label="Controls">
         <span><kbd>WASD</kbd> move</span><span><kbd>Shift</kbd> sprint</span>
         <span><kbd>Space</kbd> interact</span><span><kbd>Ctrl</kbd> shove</span>
+      </div>
+      <div className="meter-hud">
+        <div className="meter-row">
+          <span className="hud-label">Sprint</span>
+          <div
+            className={`meter sprint-meter${sprint.exhausted ? ' is-exhausted' : ''}${sprint.sprinting ? ' is-draining' : ''}`}
+            role="meter"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round(sprint.fraction * 100)}
+            aria-label={`Sprint stamina ${Math.round(sprint.fraction * 100)} percent${sprint.exhausted ? ', spent — walk to recover' : ''}${sprint.recovering ? ', recovering from a shove' : ''}`}
+          ><i style={{ width: `${sprint.fraction * 100}%` }} /></div>
+        </div>
+        <div className="meter-row">
+          <span className="hud-label">Shove</span>
+          <div
+            className={`meter shove-meter${sprint.shoveCooldownFraction > 0 ? ' is-charging' : ' is-ready'}`}
+            role="meter"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round((1 - sprint.shoveCooldownFraction) * 100)}
+            aria-label={sprint.shoveCooldownFraction > 0 ? 'Shove recharging' : 'Shove ready'}
+          ><i style={{ width: `${(1 - sprint.shoveCooldownFraction) * 100}%` }} /></div>
+        </div>
+        {/* Visual only: both meters already carry this state in their own labels,
+            and a second polite region would talk over the feedback indicator. */}
+        <span className="meter-note" aria-hidden="true">
+          {sprint.recovering ? 'Recovering' : sprint.exhausted ? 'Walk to recover' : ''}
+        </span>
       </div>
       <div className="carry-hud"><span className="hud-label">Carry</span><ol aria-label={`${inventory.carriedItems.length} of ${GAME.maxCarriedItems} carry slots filled`}>
         {Array.from({ length: GAME.maxCarriedItems }, (_, index) => {

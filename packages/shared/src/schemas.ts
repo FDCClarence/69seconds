@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { GAME } from './constants.js';
+import { GAME, SPRINT } from './constants.js';
 
 export const gamePhaseSchema = z.enum(['LOBBY', 'COUNTDOWN', 'LOOTING', 'TALLY']);
 export const playerConnectionStateSchema = z.enum(['CONNECTED', 'RECONNECTING']);
@@ -105,7 +105,13 @@ export const lootUpdateSchema = z.discriminatedUnion('type', [
 export const snapshotPlayerStateSchema = z.strictObject({
   id: z.string().min(1).max(128),
   position: vector2Schema,
+  /** The effective sprint the server applied, not the Shift the client asked for. */
   sprinting: z.boolean(),
+  stamina: z.number().min(0).max(SPRINT.staminaCapacity),
+  /** Latched at an empty bar; sprint stays denied until the re-engage floor. */
+  exhausted: z.boolean(),
+  /** Server clock time until which this player's own input is ignored; null when free. */
+  recoveringUntilMs: z.number().int().nonnegative().nullable(),
   acknowledgedInputSequence: z.number().int().min(-1),
 });
 
@@ -187,10 +193,69 @@ export const interactionResultSchema = z.discriminatedUnion('outcome', [
   }),
 ]);
 
-export const shoveRequestSchema = z.object({
+/**
+ * Strict, and deliberately carries no direction: the server owns facing, derived
+ * from the movement inputs it already validated, so there is no vector to spoof.
+ * `targetPlayerId` is only a nomination, and omitting it asks the server to pick
+ * the nearest eligible player inside the cone itself.
+ */
+export const shoveRequestSchema = z.strictObject({
   requestId: requestIdSchema,
-  targetPlayerId: z.string().min(1).max(128).optional(),
+  targetPlayerId: playerIdSchema.optional(),
+});
+
+export const shoveRejectionReasonSchema = z.enum([
+  'INVALID_PAYLOAD',
+  'NOT_IN_MATCH',
+  'INVALID_PHASE',
+  'ON_COOLDOWN',
+  'RECOVERING',
+  'NO_TARGET_IN_CONE',
+  'UNKNOWN_TARGET',
+  'SELF_TARGET',
+  'TARGET_UNAVAILABLE',
+  'OUT_OF_RANGE',
+  'OUT_OF_CONE',
+  'NO_LINE_OF_ACCESS',
+  'RATE_LIMITED',
+]);
+
+/**
+ * Every acknowledgement restates the cooldown deadline, so the HUD can show the
+ * wait without inferring it from a rejection reason.
+ */
+export const shoveResultSchema = z.discriminatedUnion('outcome', [
+  z.strictObject({
+    outcome: z.literal('LANDED'),
+    requestId: requestIdSchema,
+    targetPlayerId: playerIdSchema,
+    cooldownEndsAtMs: z.number().int().nonnegative(),
+  }),
+  z.strictObject({
+    outcome: z.literal('REJECTED'),
+    requestId: requestIdSchema,
+    reason: shoveRejectionReasonSchema,
+    message: z.string().min(1),
+    cooldownEndsAtMs: z.number().int().nonnegative(),
+  }),
+]);
+
+/**
+ * Broadcast to the room after a committed shove, and the only trigger for shove
+ * animation, sound, and HUD feedback. It carries the authoritative post-knockback
+ * position so every client agrees on where the target ended up.
+ */
+export const shoveLandedSchema = z.strictObject({
+  sequence: z.number().int().nonnegative(),
+  roomCode: roomCodeSchema,
+  shoverPlayerId: playerIdSchema,
+  targetPlayerId: playerIdSchema,
+  /** Unit vector of the server-owned facing this shove resolved against. */
   direction: vector2Schema,
+  targetPosition: vector2Schema,
+  /** Actual distance applied, which is shorter than the configured push near geometry. */
+  knockbackPixels: z.number().nonnegative(),
+  recoveryEndsAtMs: z.number().int().nonnegative(),
 });
 
 export const roomCreateRequestSchema = z.strictObject({});
@@ -293,6 +358,9 @@ export type InteractionRequest = z.infer<typeof interactionRequestSchema>;
 export type InteractionRejectionReason = z.infer<typeof interactionRejectionReasonSchema>;
 export type InteractionResult = z.infer<typeof interactionResultSchema>;
 export type ShoveRequest = z.infer<typeof shoveRequestSchema>;
+export type ShoveRejectionReason = z.infer<typeof shoveRejectionReasonSchema>;
+export type ShoveResult = z.infer<typeof shoveResultSchema>;
+export type ShoveLanded = z.infer<typeof shoveLandedSchema>;
 export type RoomCreateRequest = z.infer<typeof roomCreateRequestSchema>;
 export type RoomJoinRequest = z.infer<typeof roomJoinRequestSchema>;
 export type RoomLeaveRequest = z.infer<typeof roomLeaveRequestSchema>;

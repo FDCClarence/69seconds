@@ -53,17 +53,17 @@ The committed migrations create normalized, uniquely indexed users and expiring 
 4. During gameplay the client emits intent events: `input:update`, `interaction:request`, and `shove:request`.
 5. The transport parses each payload with its shared Zod schema, applies rate/size controls, and passes validated intent to the room simulation.
 6. The authoritative tick validates phase, movement limits, collision, proximity, inventory, loot availability, cart ownership, sprint, and shoves.
-7. The server emits increasing-sequence `state:snapshot` messages, per-socket `loot:sync` state, and room-wide `loot:update` changes. `interaction:request` is answered by a typed acknowledgement; a malformed payload also produces `game:error` with a stable code.
+7. The server emits increasing-sequence `state:snapshot` messages, per-socket `loot:sync` state, and room-wide `loot:update` and `shove:landed` changes. `interaction:request` and `shove:request` are each answered by a typed acknowledgement; a malformed payload also produces `game:error` with a stable code.
 8. The browser runtime-validates snapshots/syncs/updates/errors, ignores stale sequences, reconciles local presentation, and never mutates canonical server state.
 
-The room handlers return typed acknowledgement unions while broadcasting runtime-validated `lobby:state` snapshots. Movement input and loot interactions now both enter the authoritative room simulation; only the shove handler remains validation-only until its focused milestone.
+The room handlers return typed acknowledgement unions while broadcasting runtime-validated `lobby:state` snapshots. Movement input, loot interactions, and shoves all now enter the authoritative room simulation; no gameplay handler remains validation-only.
 
 ## Authoritative movement networking
 
 - Every active match runs a deterministic 30 Hz fixed-step simulation. Movement distance is derived only from shared walk/sprint speeds, normalized directional booleans, and the fixed step; client timestamps do not advance the simulation.
 - The browser sends strict, sequenced input state at no more than 30 Hz. The payload contains WASD booleans and a sprint boolean, never a position or velocity claim. Stale/duplicate sequences are ignored and input backlog is bounded.
 - `packages/shared` owns the 1,800 × 1,200 bounds, four slot-indexed spawn points, shelf rectangles, circle-vs-rectangle validity rule, and axis-separated movement integration. Both the server and local predictor consume that representation; Phaser collision is presentation support rather than authority.
-- The server broadcasts compact movement snapshots at 20 Hz. A snapshot contains room code, snapshot sequence, server phase/deadline, and each player's position, sprint presentation state, and last processed input sequence. Lobby membership, loot, and inventories are not repeated in this high-frequency message.
+- The server broadcasts compact movement snapshots at 20 Hz. A snapshot contains room code, snapshot sequence, server phase/deadline, and each player's position, effective sprint state, remaining stamina, exhaustion latch, recovery deadline, and last processed input sequence. Lobby membership, loot, and inventories are not repeated in this high-frequency message.
 - The local Phaser player advances immediately on the same 30 Hz fixed step. On a snapshot it resets to the authoritative position, drops inputs through the acknowledged sequence, and replays only remaining inputs.
 - Remote players retain timestamped snapshots and render 100 ms behind estimated server time, interpolating between samples. Stale snapshots and stale interpolation samples are ignored.
 - Starting assigns four separated, collision-safe positions and synchronizes `COUNTDOWN` through lobby state plus an initial movement snapshot. The server advances to `LOOTING` at the countdown deadline and broadcasts the phase change; movement and local action hooks are gated until then.
@@ -82,6 +82,19 @@ The room handlers return typed acknowledgement unions while broadcasting runtime
 - Loot never travels in the 20 Hz movement snapshot. Availability changes are events, not periodic state, so the high-frequency message stays compact.
 - The client predicts a pickup only: the marker hides and a dashed carry slot appears immediately, and both are restored if the server refuses or never answers. Deposits wait for confirmation, because reversing four slots reads worse than a brief pause.
 - Removing a player restocks whatever they were still holding and clears their cart ownership, while their deposited items stay in the cart so the tally keeps crediting completed work.
+
+## Authoritative sprint and shove
+
+- Sprint is a server-owned stamina resource, not a client speed switch. `resolveSprint` in `packages/shared` is the single implementation of drain, refill, and the exhaustion latch; the 30 Hz server tick and the local predictor both step it, so a predicted bar and a predicted position can never disagree with the snapshot that follows. `docs/GAME_SPEC.md` holds the design decision and its balance values.
+- Sprinting requires a held Shift, an actual movement input, and a bar that is neither empty nor latched. Emptying the bar latches exhaustion, and only the re-engage floor clears it, which is what stops a held Shift from flickering between walk and sprint every few ticks. An exhausted player still walks; sprint is denied, not movement.
+- Stamina and recovery windows survive a reconnection by design. `resetInput` clears held input and per-connection sequencing without touching either, so dropping a socket cannot refill the bar or cancel a stun.
+- `MatchShoveAuthority` owns shove cooldowns, the anti-spam bucket, and idempotency history. World state stays with the simulation: the authority is handed a read-only view of participants and returns a decision plus the effect to apply, which keeps the two concerns separable and the authority unit-testable.
+- The server owns facing, derived from the last non-zero movement input it accepted. The request schema therefore carries no direction vector, which removes the obvious thing a modified client would forge. `targetPlayerId` is a nomination only, and omitting it makes the server choose the nearest reachable player inside the cone.
+- Each request is validated in a fixed order: membership, duplicate request ID, phase and deadline, rate limit, the shover's own recovery window, cooldown, then the target's eligibility, range, facing cone, and line of access. Every rejection has a stable typed reason, and every acknowledgement restates the cooldown deadline.
+- Knockback is a swept impulse resolved inside the same synchronous call, not a per-tick velocity. `sweepKnockback` steps along the push direction and keeps the last legal position, so knockback stops at geometry instead of tunnelling through it and can never leave a player in invalid map space. Carts block knockback although they do not block walking; `docs/GAME_SPEC.md` records why.
+- Mutual shoves are deterministic for the same reason contested pickups are: resolution runs to completion on the event loop. The first request to arrive lands and puts its target into recovery, and a recovering player cannot shove, so the second request is refused. Exactly one shove lands.
+- `shove:landed` is broadcast to the room with the target's authoritative post-knockback position, and it is the only trigger for shove animation and sound. The local target is corrected from that event immediately and clears its pending inputs; a remote target is left to the interpolation buffer, which reaches the same position from the next snapshot without fighting an already-smoothed path.
+- The client predicts only the swing and the cooldown, so a shove reads as immediate while nobody moves until the server says so. The acknowledgement replaces the predicted cooldown with the real one, which rolls it back to zero when the attempt is refused outright.
 
 ## In-memory room lifecycle
 

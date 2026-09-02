@@ -10,11 +10,14 @@ import {
   interactionResultSchema,
   serverErrorSchema,
   shoveRequestSchema,
+  shoveResultSchema,
   type ClientToServerEvents,
   type InteractionRejectionReason,
   type InteractionResult,
   type InterServerEvents,
   type LootUpdate,
+  type ShoveRejectionReason,
+  type ShoveResult,
   type RoomCommandResult,
   type RoomPublicState,
   type ServerError,
@@ -29,6 +32,7 @@ import { readSessionTokenFromCookieHeader, type SessionCookieConfig } from './au
 import type { AuthService } from './auth/service.js';
 import { REJECTION_MESSAGES, type LootAuthorityOptions } from './game/loot-authority.js';
 import { AuthoritativeRoomSimulation } from './game/simulation.js';
+import { SHOVE_REJECTION_MESSAGES, type ShoveAuthorityOptions } from './game/shove-authority.js';
 import { RoomRegistry, RoomRegistryError, type RoomRegistryOptions } from './rooms/registry.js';
 
 type GameServer = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
@@ -41,6 +45,8 @@ export interface SocketServerOptions {
   rooms?: Omit<RoomRegistryOptions, 'onEvent'>;
   /** Test seam for placing loot; production uses the shared store map. */
   loot?: LootAuthorityOptions;
+  /** Test seam for shove geometry; production uses the shared store map. */
+  shove?: ShoveAuthorityOptions;
 }
 
 export interface SocketServerHandle {
@@ -101,6 +107,20 @@ function interactionRejection(
     reason,
     message: REJECTION_MESSAGES[reason],
     carriedItemIds: [...carriedItemIds],
+  });
+}
+
+/**
+ * Transport-level shove rejection, used before a simulation is ever consulted.
+ * A cooldown of zero is honest here: no shove has been committed to time from.
+ */
+function shoveRejection(requestId: string, reason: ShoveRejectionReason): ShoveResult {
+  return shoveResultSchema.parse({
+    outcome: 'REJECTED',
+    requestId,
+    reason,
+    message: SHOVE_REJECTION_MESSAGES[reason],
+    cooldownEndsAtMs: 0,
   });
 }
 
@@ -297,7 +317,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       }
       try {
         const room = rooms.start(playerId);
-        const simulation = new AuthoritativeRoomSimulation(room, options.loot ?? {});
+        const simulation = new AuthoritativeRoomSimulation(room, options.loot ?? {}, options.shove ?? {});
         simulations.set(room.code, simulation);
         io.to(room.code).emit('lobby:state', room);
         io.to(room.code).emit('state:snapshot', simulation.snapshot(Date.now()));
@@ -338,8 +358,23 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       broadcastLootUpdate(code, resolution.update);
     });
 
-    socket.on('shove:request', (payload) => {
-      if (!isValid(shoveRequestSchema, payload)) reportInvalidGameplayPayload(socket, 'shove:request');
+    socket.on('shove:request', (payload, acknowledge) => {
+      const parsed = shoveRequestSchema.safeParse(payload);
+      if (!parsed.success) {
+        reportInvalidGameplayPayload(socket, 'shove:request');
+        acknowledge?.(shoveRejection(requestIdFrom(payload), 'INVALID_PAYLOAD'));
+        return;
+      }
+      const code = rooms.roomForPlayer(playerId);
+      const simulation = code ? simulations.get(code) : undefined;
+      if (!code || !simulation) {
+        acknowledge?.(shoveRejection(parsed.data.requestId, code ? 'INVALID_PHASE' : 'NOT_IN_MATCH'));
+        return;
+      }
+      const resolution = simulation.resolveShove(playerId, parsed.data, Date.now());
+      acknowledge?.(resolution.result);
+      // A replayed request ID reports its original decision and shoves nobody twice.
+      if (resolution.landed) io.to(code).emit('shove:landed', resolution.landed);
     });
 
     socket.on('disconnect', () => {

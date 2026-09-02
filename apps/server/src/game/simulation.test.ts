@@ -2,10 +2,14 @@ import {
   GAME,
   NETWORK,
   PLAYER_SPAWN_POSITIONS,
+  SHOVE,
+  SPRINT,
+  distanceBetween,
   isValidPlayerPosition,
   simulatePlayerMovement,
   type ClientInput,
   type RoomPublicState,
+  type ShoveRequest,
 } from '@69-seconds/shared';
 import { describe, expect, it } from 'vitest';
 import { AuthoritativeRoomSimulation } from './simulation.js';
@@ -38,6 +42,29 @@ function input(sequence: number, overrides: Partial<ClientInput> = {}): ClientIn
     sprint: false,
     ...overrides,
   };
+}
+
+/** Two players 40px apart on the open floor east of the store centre, inside shove range. */
+function adjacentRoom(): RoomPublicState {
+  const base = room(2);
+  base.players[0]!.position = { x: 900, y: 550 };
+  base.players[1]!.position = { x: 940, y: 550 };
+  return base;
+}
+
+const LEFT = { up: false, down: false, left: true, right: false };
+
+let shoveCounter = 0;
+function shove(targetPlayerId?: string): ShoveRequest {
+  shoveCounter += 1;
+  return {
+    requestId: `00000000-0000-4000-8000-${String(shoveCounter).padStart(12, '0')}`,
+    ...(targetPlayerId ? { targetPlayerId } : {}),
+  };
+}
+
+function playerIn(simulation: AuthoritativeRoomSimulation, serverNowMs: number, playerId: string) {
+  return simulation.snapshot(serverNowMs).players.find((player) => player.id === playerId)!;
 }
 
 describe('authoritative movement simulation', () => {
@@ -151,5 +178,156 @@ describe('authoritative movement simulation', () => {
       if (simulation.tick(1_000 + tick).snapshotDue) snapshots += 1;
     }
     expect(snapshots).toBe(NETWORK.snapshotRateHz);
+  });
+});
+
+describe('server-owned sprint resource', () => {
+  it('spends the bar only while sprinting and reports it in the snapshot', () => {
+    const simulation = new AuthoritativeRoomSimulation(room());
+    simulation.submitInput('player-0', input(0, { sprint: true }));
+    simulation.tick(2_000);
+    const sprinting = playerIn(simulation, 2_000, 'player-0');
+    expect(sprinting.sprinting).toBe(true);
+    expect(sprinting.stamina).toBeLessThan(SPRINT.staminaCapacity);
+    expect(sprinting.exhausted).toBe(false);
+
+    // Shift held with no movement is not sprinting, so the bar climbs back.
+    simulation.submitInput('player-0', input(1, {
+      sprint: true,
+      movement: { up: false, down: false, left: false, right: false },
+    }));
+    simulation.tick(2_034);
+    const standing = playerIn(simulation, 2_034, 'player-0');
+    expect(standing.sprinting).toBe(false);
+    expect(standing.stamina).toBeGreaterThan(sprinting.stamina);
+  });
+
+  it('drops an exhausted player to walking speed instead of stopping them', () => {
+    const simulation = new AuthoritativeRoomSimulation(room());
+    simulation.tick(2_000);
+    // Hold sprint until the bar first latches, alternating direction so the
+    // player stays on open floor rather than pinning against the map edge. The
+    // sample has to be taken here: keep holding and the latch clears again at
+    // the re-engage floor.
+    let exhausted = playerIn(simulation, 2_000, 'player-0');
+    for (let tick = 0; tick < NETWORK.simulationTickRateHz * 30 && !exhausted.exhausted; tick += 1) {
+      simulation.submitInput('player-0', input(tick + 1, {
+        sprint: true,
+        movement: tick % 60 < 30 ? { up: false, down: false, left: false, right: true } : LEFT,
+      }));
+      simulation.tick(2_000 + tick * 34);
+      exhausted = playerIn(simulation, 2_000 + tick * 34, 'player-0');
+    }
+    expect(exhausted.exhausted).toBe(true);
+    expect(exhausted.stamina).toBe(0);
+    // The latching tick was itself a sprinting tick; denial starts on the next one.
+
+    const before = exhausted.position.x;
+    simulation.submitInput('player-0', input(100_000, { sprint: true }));
+    simulation.tick(20_000);
+    const stillWalking = playerIn(simulation, 20_000, 'player-0');
+    expect(stillWalking.sprinting).toBe(false);
+    expect(stillWalking.position.x - before).toBeCloseTo(
+      GAME.walkSpeedPixelsPerSecond / NETWORK.simulationTickRateHz,
+    );
+  });
+
+  it('cannot be refilled by dropping and restoring the socket', () => {
+    const simulation = new AuthoritativeRoomSimulation(room());
+    simulation.tick(2_000);
+    for (let tick = 0; tick < 60; tick += 1) {
+      simulation.submitInput('player-0', input(tick + 1, { sprint: true }));
+      simulation.tick(2_000 + tick * 34);
+    }
+    const spent = playerIn(simulation, 4_100, 'player-0').stamina;
+    expect(spent).toBeLessThan(SPRINT.staminaCapacity);
+
+    simulation.resetInput('player-0', true);
+    const afterReconnect = playerIn(simulation, 4_100, 'player-0');
+    expect(afterReconnect.stamina).toBe(spent);
+    expect(afterReconnect.sprinting).toBe(false);
+  });
+});
+
+describe('authoritative shove effects', () => {
+  it('aims along the facing the server derived from movement input', () => {
+    const simulation = new AuthoritativeRoomSimulation(adjacentRoom());
+    // Spawn facing is south, so the eastward neighbour is outside the cone.
+    simulation.tick(2_000);
+    expect(simulation.resolveShove('player-0', shove('player-1'), 2_000).result)
+      .toMatchObject({ outcome: 'REJECTED', reason: 'OUT_OF_CONE' });
+
+    simulation.submitInput('player-0', input(1));
+    simulation.tick(2_034);
+    expect(simulation.resolveShove('player-0', shove('player-1'), 2_034).result)
+      .toMatchObject({ outcome: 'LANDED', targetPlayerId: 'player-1' });
+  });
+
+  it('moves the target to a legal position and freezes only its own input', () => {
+    const simulation = new AuthoritativeRoomSimulation(adjacentRoom());
+    simulation.submitInput('player-0', input(1));
+    simulation.tick(2_000);
+    const before = playerIn(simulation, 2_000, 'player-1').position;
+
+    const resolution = simulation.resolveShove('player-0', shove('player-1'), 2_000);
+    expect(resolution.result.outcome).toBe('LANDED');
+    const shoved = playerIn(simulation, 2_000, 'player-1');
+    expect(shoved.position.x).toBeGreaterThan(before.x);
+    expect(distanceBetween(before, shoved.position)).toBeCloseTo(SHOVE.knockbackPixels);
+    expect(isValidPlayerPosition(shoved.position)).toBe(true);
+    expect(shoved.recoveringUntilMs).toBe(2_000 + SHOVE.recoveryMs);
+
+    // The target pushes back west during recovery: input is acknowledged but ignored.
+    const knockedTo = shoved.position.x;
+    for (let tick = 0; tick < 5; tick += 1) {
+      simulation.submitInput('player-1', input(tick + 10, { movement: LEFT }));
+      simulation.tick(2_010 + tick * 34);
+    }
+    const recovering = playerIn(simulation, 2_180, 'player-1');
+    expect(recovering.position.x).toBe(knockedTo);
+    expect(recovering.acknowledgedInputSequence).toBeGreaterThan(0);
+
+    // Once the window closes the same input takes effect again.
+    simulation.submitInput('player-1', input(200, { movement: LEFT }));
+    simulation.tick(2_000 + SHOVE.recoveryMs + 34);
+    expect(playerIn(simulation, 2_500, 'player-1').position.x).toBeLessThan(knockedTo);
+  });
+
+  it('resolves a mutual exchange to a single winner by arrival order', () => {
+    const simulation = new AuthoritativeRoomSimulation(adjacentRoom());
+    simulation.submitInput('player-0', input(1));
+    simulation.submitInput('player-1', input(1, { movement: LEFT }));
+    simulation.tick(2_000);
+
+    const first = simulation.resolveShove('player-0', shove('player-1'), 2_000);
+    const retaliation = simulation.resolveShove('player-1', shove('player-0'), 2_000);
+    expect(first.result).toMatchObject({ outcome: 'LANDED' });
+    expect(first.landed).not.toBeNull();
+    expect(retaliation.result).toMatchObject({ outcome: 'REJECTED', reason: 'RECOVERING' });
+    expect(retaliation.landed).toBeNull();
+    // Only one player was displaced by the exchange.
+    expect(playerIn(simulation, 2_000, 'player-0').recoveringUntilMs).toBeNull();
+  });
+
+  it('closes shoving outside the looting phase and for absent players', () => {
+    const simulation = new AuthoritativeRoomSimulation(adjacentRoom());
+    expect(simulation.resolveShove('player-0', shove('player-1'), 1_500).result)
+      .toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
+    simulation.tick(2_000);
+    expect(simulation.resolveShove('ghost', shove('player-1'), 2_000).result)
+      .toMatchObject({ outcome: 'REJECTED', reason: 'NOT_IN_MATCH' });
+  });
+
+  it('cannot shove a player who is mid-reconnection', () => {
+    const base = adjacentRoom();
+    const simulation = new AuthoritativeRoomSimulation(base);
+    simulation.submitInput('player-0', input(1));
+    simulation.tick(2_000);
+
+    base.players[1]!.isConnected = false;
+    base.players[1]!.connectionState = 'RECONNECTING';
+    simulation.synchronizePlayers(base);
+    expect(simulation.resolveShove('player-0', shove('player-1'), 2_000).result)
+      .toMatchObject({ outcome: 'REJECTED', reason: 'TARGET_UNAVAILABLE' });
   });
 });

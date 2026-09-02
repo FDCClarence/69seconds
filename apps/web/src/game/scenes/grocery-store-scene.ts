@@ -4,11 +4,20 @@ import {
   LOOT,
   NETWORK,
   PLAYER_SPAWN_POSITIONS,
+  SHOVE,
+  SPRINT,
   assignedCartIdForSlot,
   cartLabel,
   hasLineOfAccess,
+  initialSprintState,
+  isMoving,
+  isWithinFacingCone,
   isWithinInteractionRadius,
   lootCatalogEntry,
+  movementAxis,
+  movementVelocity,
+  normalizeMovementVector,
+  resolveSprint,
   simulatePlayerMovement,
   type CartId,
   type ClientInput,
@@ -16,6 +25,10 @@ import {
   type GameSnapshot,
   type InteractionRequest,
   type InteractionResult,
+  type ShoveLanded,
+  type ShoveRequest,
+  type SprintState,
+  type Vector2,
 } from '@69-seconds/shared';
 import { PlayerEntity } from '../entities/player-entity.js';
 import { GameInput } from '../input/game-input.js';
@@ -34,14 +47,14 @@ import {
   type LootView,
   type LootViewItem,
 } from '../network/loot-view.js';
-import { reconcilePredictedPosition } from '../network/prediction.js';
+import { reconcilePredictedState } from '../network/prediction.js';
 import {
   GENERATED_GROCERY_STORE_MAP,
   STORE_OBJECT_LAYER,
   STORE_VISUAL_LAYERS,
   type StoreCart,
 } from '../maps/grocery-store-placeholder-map.js';
-import type { GameFeedback, GroceryGameCallbacks } from '../types.js';
+import type { GameFeedback, GroceryGameCallbacks, SprintHudState } from '../types.js';
 
 const MAP_WIDTH = GENERATED_GROCERY_STORE_MAP.width;
 const MAP_HEIGHT = GENERATED_GROCERY_STORE_MAP.height;
@@ -64,6 +77,14 @@ export class GroceryStoreScene extends Phaser.Scene {
   private lastAcknowledgedInputSequence = -1;
   private serverClockOffsetMs = 0;
   private awaitingInteraction = false;
+  private awaitingShove = false;
+  private sprint: SprintState = initialSprintState();
+  private sprinting = false;
+  /** Mirrors the server's derived facing: the last non-zero movement direction. */
+  private facing: Vector2 = { x: 0, y: 1 };
+  private recoveringUntilServerMs = 0;
+  private shoveCooldownEndsAtServerMs = 0;
+  private lastPublishedSprint = '';
   private readonly unsubscribes: (() => void)[] = [];
 
   constructor(callbacks: GroceryGameCallbacks) {
@@ -117,6 +138,10 @@ export class GroceryStoreScene extends Phaser.Scene {
       this.refreshLootVisibility();
       this.publishInventory();
     }));
+    this.subscribe(this.callbacks.subscribeShoveLanded?.((event) => {
+      if (this.belongsToRoom(event.roomCode)) this.applyShoveLanded(event);
+    }));
+    this.publishSprint();
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       window.removeEventListener('blur', resetInput);
       inputTarget?.removeEventListener('game-input-blur', resetInput);
@@ -129,33 +154,57 @@ export class GroceryStoreScene extends Phaser.Scene {
   override update(_time: number, deltaMs: number): void {
     if (!this.player || !this.controls) return;
     const frame = this.controls.read();
+    const recovering = this.isRecovering();
     this.fixedAccumulatorMs = Math.min(this.fixedAccumulatorMs + deltaMs, 250);
     const fixedStepMs = 1_000 / NETWORK.simulationTickRateHz;
     while (this.fixedAccumulatorMs >= fixedStepMs) {
       this.fixedAccumulatorMs -= fixedStepMs;
+      // The raw Shift goes on the wire; whether it counts as sprinting is the
+      // server's call, and this client only predicts the same decision locally.
       const input = this.callbacks.sendInput?.(frame.movement, frame.sprinting) ?? null;
       if (input && this.phase === 'LOOTING') {
         this.pendingInputs.push(input);
         if (this.pendingInputs.length > NETWORK.maxInputRateHz * 4) this.pendingInputs.shift();
       }
-      if (this.phase === 'LOOTING') {
-        const next = simulatePlayerMovement(
-          { x: this.player.x, y: this.player.y },
-          frame.movement,
-          frame.sprinting,
-          1 / NETWORK.simulationTickRateHz,
-        );
-        this.player.setPosition(next.x, next.y);
-      }
+      if (this.phase !== 'LOOTING') continue;
+
+      const resolved = resolveSprint(
+        this.sprint,
+        frame.movement,
+        frame.sprinting && !recovering,
+        1 / NETWORK.simulationTickRateHz,
+      );
+      this.sprint = resolved.state;
+      this.sprinting = resolved.sprinting;
+      if (recovering) continue;
+
+      if (isMoving(frame.movement)) this.facing = normalizeMovementVector(movementAxis(frame.movement));
+      const next = simulatePlayerMovement(
+        { x: this.player.x, y: this.player.y },
+        frame.movement,
+        resolved.sprinting,
+        1 / NETWORK.simulationTickRateHz,
+      );
+      this.player.setPosition(next.x, next.y);
     }
-    this.player.move(frame.velocity, frame.sprinting);
+    // A recovering player reads as planted: their own input is going nowhere.
+    const velocity = recovering ? { x: 0, y: 0 } : movementVelocity(frame.movement, this.sprinting);
+    this.player.move(velocity, this.sprinting && !recovering);
     this.interpolateRemotePlayers();
     const action = this.controls.readAction();
     if (this.phase === 'LOOTING' && action === 'INTERACT') void this.interact();
-    if (this.phase === 'LOOTING' && action === 'SHOVE') {
-      this.showFeedback({ kind: 'SHOVE_DEBUG', message: 'CTRL · shove remains a local debug hook' });
-    }
+    if (this.phase === 'LOOTING' && action === 'SHOVE') void this.shove();
     this.updateInteractionPrompt();
+    this.publishSprint();
+  }
+
+  /** Estimated server clock, which every cooldown and recovery deadline is stated in. */
+  private serverNowMs(): number {
+    return Date.now() + this.serverClockOffsetMs;
+  }
+
+  private isRecovering(): boolean {
+    return this.serverNowMs() < this.recoveringUntilServerMs;
   }
 
   private subscribe(unsubscribe: (() => void) | undefined): void {
@@ -180,14 +229,19 @@ export class GroceryStoreScene extends Phaser.Scene {
         this.pendingInputs = [];
       }
       this.lastAcknowledgedInputSequence = local.acknowledgedInputSequence;
-      const reconciliation = reconcilePredictedPosition(
-        local.position,
+      this.recoveringUntilServerMs = local.recoveringUntilMs ?? 0;
+      const reconciliation = reconcilePredictedState(
+        local,
         this.pendingInputs,
         local.acknowledgedInputSequence,
         snapshot.phase,
+        this.isRecovering(),
       );
       this.pendingInputs = reconciliation.pendingInputs;
+      this.sprint = reconciliation.sprint;
+      this.sprinting = local.sprinting;
       this.player.setPosition(reconciliation.position.x, reconciliation.position.y);
+      this.publishSprint();
     }
     for (const remote of snapshot.players) {
       if (remote.id === this.callbacks.localPlayerId) continue;
@@ -256,6 +310,116 @@ export class GroceryStoreScene extends Phaser.Scene {
     } finally {
       this.awaitingInteraction = false;
     }
+  }
+
+  /**
+   * The swing plays the instant Ctrl is pressed and the cooldown starts
+   * optimistically, so a shove reads as immediate. Only the server moves anybody:
+   * the acknowledgement replaces the predicted cooldown with the real one, which
+   * also rolls it back to zero when the attempt is refused outright.
+   */
+  private async shove(): Promise<void> {
+    if (!this.callbacks.requestShove || this.awaitingShove) return;
+    if (this.isRecovering()) {
+      this.showFeedback({ kind: 'RECOVERING', message: 'Still recovering from a shove' });
+      return;
+    }
+    if (this.serverNowMs() < this.shoveCooldownEndsAtServerMs) {
+      this.showFeedback({ kind: 'ON_COOLDOWN', message: 'Shove is still recharging' });
+      return;
+    }
+    const targetPlayerId = this.nearestShovableTarget();
+    const request: ShoveRequest = {
+      requestId: this.newRequestId(),
+      ...(targetPlayerId ? { targetPlayerId } : {}),
+    };
+    this.playShoveSwing();
+    this.shoveCooldownEndsAtServerMs = this.serverNowMs() + SHOVE.cooldownMs;
+    this.publishSprint();
+
+    this.awaitingShove = true;
+    try {
+      const result = await this.callbacks.requestShove(request);
+      this.shoveCooldownEndsAtServerMs = result.cooldownEndsAtMs;
+      this.showFeedback(result.outcome === 'LANDED'
+        ? { kind: 'SHOVE_LANDED', message: 'Shove landed' }
+        : { kind: result.reason, message: result.message });
+    } catch {
+      // No acknowledgement: clear the predicted cooldown rather than locking the key.
+      this.shoveCooldownEndsAtServerMs = 0;
+      this.showFeedback({ kind: 'DESYNCHRONIZED', message: 'The server did not confirm that shove' });
+    } finally {
+      this.awaitingShove = false;
+      this.publishSprint();
+    }
+  }
+
+  /**
+   * Only the local target is corrected here. A remote target is left to the
+   * interpolation buffer, which reaches the same authoritative position from the
+   * next snapshot without fighting an already-smoothed path.
+   */
+  private applyShoveLanded(event: ShoveLanded): void {
+    this.playShoveImpact(event.targetPosition);
+    if (event.targetPlayerId !== this.callbacks.localPlayerId) return;
+    this.recoveringUntilServerMs = event.recoveryEndsAtMs;
+    // These inputs are being ignored server-side; replaying them would undo the knockback.
+    this.pendingInputs = [];
+    this.player?.setPosition(event.targetPosition.x, event.targetPosition.y);
+    this.cameras.main.shake(160, 0.006);
+    this.showFeedback({ kind: 'SHOVE_TAKEN', message: 'Shoved · regaining your footing' });
+    this.publishSprint();
+  }
+
+  /** Mirrors the server's range, cone, and line-of-access checks so the prompt stays honest. */
+  private nearestShovableTarget(): string | undefined {
+    const from = this.playerPosition();
+    if (!from) return undefined;
+    return [...this.remotePlayers.entries()]
+      .filter(([, remote]) => isWithinInteractionRadius(from, { x: remote.x, y: remote.y }, SHOVE.rangePixels))
+      .filter(([, remote]) => isWithinFacingCone(from, this.facing, { x: remote.x, y: remote.y }))
+      .filter(([, remote]) => hasLineOfAccess(from, { x: remote.x, y: remote.y }))
+      .sort(([, left], [, right]) => this.distanceTo(left) - this.distanceTo(right))[0]?.[0];
+  }
+
+  private playShoveSwing(): void {
+    if (!this.player) return;
+    const arc = this.add.circle(
+      this.player.x + this.facing.x * 26,
+      this.player.y + this.facing.y * 26,
+      16,
+      0xf6ca61,
+      0.5,
+    ).setDepth(24);
+    this.tweens.add({ targets: arc, scale: 1.6, alpha: 0, duration: 200, onComplete: () => arc.destroy() });
+  }
+
+  private playShoveImpact(position: Vector2): void {
+    const burst = this.add.circle(position.x, position.y, 20, 0xe86b49, 0.55)
+      .setStrokeStyle(3, 0xfff2cf, 0.9).setDepth(25);
+    this.tweens.add({ targets: burst, scale: 2.1, alpha: 0, duration: 320, onComplete: () => burst.destroy() });
+  }
+
+  /** Coalesced so a 60 Hz render loop does not drive a React update every frame. */
+  private publishSprint(): void {
+    const now = this.serverNowMs();
+    const state: SprintHudState = {
+      fraction: Math.max(0, Math.min(1, this.sprint.stamina / SPRINT.staminaCapacity)),
+      sprinting: this.sprinting,
+      exhausted: this.sprint.exhausted,
+      shoveCooldownFraction: Math.max(0, Math.min(1, (this.shoveCooldownEndsAtServerMs - now) / SHOVE.cooldownMs)),
+      recovering: now < this.recoveringUntilServerMs,
+    };
+    const signature = [
+      Math.round(state.fraction * 50),
+      state.sprinting,
+      state.exhausted,
+      Math.round(state.shoveCooldownFraction * 20),
+      state.recovering,
+    ].join('|');
+    if (signature === this.lastPublishedSprint) return;
+    this.lastPublishedSprint = signature;
+    this.callbacks.onSprintChange?.(state);
   }
 
   private rebuildLootObjects(): void {
@@ -339,6 +503,13 @@ export class GroceryStoreScene extends Phaser.Scene {
   }
 
   private setPrompt(text: string): void {
+    const shovable = this.phase === 'LOOTING' && !this.isRecovering()
+      && this.serverNowMs() >= this.shoveCooldownEndsAtServerMs
+      && this.nearestShovableTarget() !== undefined;
+    this.writePrompt(shovable ? `${text} · CTRL shove` : text);
+  }
+
+  private writePrompt(text: string): void {
     this.promptText?.setText(text).setPosition(this.scale.width / 2, this.scale.height - 42).setAlpha(1);
   }
 
@@ -382,7 +553,6 @@ export class GroceryStoreScene extends Phaser.Scene {
   }
 
   private showFeedback(feedback: GameFeedback): void {
-    if (feedback.kind === 'SHOVE_DEBUG') this.callbacks.onAction?.('SHOVE');
     this.callbacks.onFeedback?.(feedback);
     this.feedbackText?.setText(feedback.message).setAlpha(1);
     this.time.delayedCall(1_100, () => this.feedbackText?.setAlpha(0));

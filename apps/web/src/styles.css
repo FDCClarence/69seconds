@@ -86,7 +86,7 @@ fieldset { display: flex; flex-direction: column; gap: 1rem; min-width: 0; margi
 .phaser-focus-frame { position: absolute; inset: 0; outline: 0; }
 .phaser-focus-frame canvas { width: 100% !important; height: 100% !important; display: block; }
 .phaser-focus-frame:focus-visible::after { content: ''; position: absolute; inset: .75rem; border: 2px solid #f6ca61; pointer-events: none; z-index: 2; }
-.game-hud { position: absolute; inset: 1rem 1rem auto; z-index: 5; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .75rem 1rem; pointer-events: none; font-family: var(--mono); }
+.game-hud { position: absolute; inset: 1rem 1rem auto; z-index: 5; display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: .75rem 1rem; pointer-events: none; font-family: var(--mono); }
 .game-hud-topline { grid-column: 1 / -1; min-height: 3.2rem; display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 1rem; padding: .65rem .85rem; border: 1px solid #789087; color: #f6f1e6; background: rgba(18, 31, 35, .9); box-shadow: 4px 4px 0 rgba(11, 21, 23, .55); }
 .game-hud-topline > div { display: flex; flex-direction: column; gap: .1rem; }
 .game-hud-topline > div:last-child { align-items: flex-end; }
@@ -98,6 +98,19 @@ fieldset { display: flex; flex-direction: column; gap: 1rem; min-width: 0; margi
 .game-controls { align-self: end; display: flex; flex-wrap: wrap; gap: .45rem; padding: .55rem; border: 1px solid #70877e; background: rgba(20, 35, 38, .9); }
 .game-controls span { display: flex; align-items: center; gap: .35rem; color: #c6d1cb; font-size: .66rem; white-space: nowrap; }
 .game-controls kbd { min-width: 2rem; padding: .22rem .35rem; border: 1px solid #96aaa1; border-bottom-width: 3px; color: #f8f4e7; background: #2f4743; font: inherit; text-align: center; }
+.meter-hud { align-self: end; display: grid; gap: .3rem; padding: .5rem .6rem; border: 1px solid #70877e; background: rgba(20, 35, 38, .9); }
+.meter-row { display: flex; align-items: center; gap: .5rem; }
+.meter-row .hud-label { min-width: 3.1rem; }
+.meter { position: relative; width: 6.5rem; height: .52rem; border: 1px solid #6d857c; background: rgba(8, 18, 20, .7); overflow: hidden; }
+.meter i { display: block; height: 100%; transition: width 90ms linear; }
+.sprint-meter i { background: #d2ec74; }
+.sprint-meter.is-draining i { background: #f6ca61; }
+.sprint-meter.is-exhausted { border-color: #d07958; }
+.sprint-meter.is-exhausted i { background: #d07958; }
+.shove-meter i { background: #7fb2c4; }
+.shove-meter.is-ready i { background: #d2ec74; }
+.shove-meter.is-charging i { background: #7a8f96; }
+.meter-note { min-height: .8rem; color: #f6ca61; font-size: .58rem; letter-spacing: .1em; text-transform: uppercase; }
 .carry-hud { display: flex; align-items: center; gap: .55rem; padding: .5rem .6rem; border: 1px solid #70877e; background: rgba(20, 35, 38, .9); }
 .carry-hud ol { display: flex; gap: .35rem; margin: 0; padding: 0; list-style: none; }
 .carry-hud li { width: 2.5rem; aspect-ratio: 1; position: relative; display: grid; place-items: center; border: 2px dashed #768b82; color: #91a39b; background: rgba(8, 18, 20, .55); }
@@ -115,6 +128,6 @@ fieldset { display: flex; flex-direction: column; gap: 1rem; min-width: 0; margi
 .countdown-overlay span { font-size: 1rem; letter-spacing: .28em; }
 .countdown-overlay strong { color: #f6ca61; font-size: clamp(5rem, 16vw, 11rem); line-height: .9; text-shadow: .08em .08em 0 #bc523b; }
 .focus-hint { position: absolute; right: 1rem; bottom: .85rem; z-index: 5; margin: 0; padding: .38rem .55rem; color: #d6ded9; background: rgba(18, 31, 35, .82); font: .62rem var(--mono); pointer-events: none; }
-@media (max-width: 720px) { .game-hud { inset: .55rem .55rem auto; grid-template-columns: 1fr auto; gap: .45rem; }.game-hud-topline { grid-template-columns: 1fr 1fr; }.hud-status { display: none !important; }.game-controls { display: none; }.carry-hud li { width: 2.15rem; }.focus-hint { right: .55rem; bottom: .55rem; max-width: calc(100% - 1.1rem); text-align: right; } }
+@media (max-width: 720px) { .game-hud { inset: .55rem .55rem auto; grid-template-columns: 1fr auto; gap: .45rem; }.meter { width: 4.2rem; }.meter-row .hud-label { min-width: 2.6rem; }.game-hud-topline { grid-template-columns: 1fr 1fr; }.hud-status { display: none !important; }.game-controls { display: none; }.carry-hud li { width: 2.15rem; }.focus-hint { right: .55rem; bottom: .55rem; max-width: calc(100% - 1.1rem); text-align: right; } }
 @media (max-width: 480px) { .account-email { display: none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

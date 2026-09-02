@@ -234,4 +234,55 @@ describe('authentication application', () => {
     expect(screen.getByLabelText('2 items deposited')).toBeTruthy();
     expect(screen.getByRole('status').textContent).toContain('Picked up Milk');
   });
+
+  it('renders the sprint bar and shove readiness through the narrow Phaser bridge', async () => {
+    const bridgeFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.append(document.createElement('canvas'));
+      callbacks.onReady?.();
+      callbacks.onSprintChange?.({
+        fraction: 0.42,
+        sprinting: true,
+        exhausted: false,
+        shoveCooldownFraction: 0.5,
+        recovering: false,
+      });
+      return { destroy: () => undefined };
+    };
+    const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
+      joinRoom: vi.fn().mockResolvedValue(startedLobby),
+    }), bridgeFactory);
+
+    const stamina = await screen.findByLabelText('Sprint stamina 42 percent');
+    expect(stamina.getAttribute('aria-valuenow')).toBe('42');
+    const shove = screen.getByLabelText('Shove recharging');
+    expect(shove.getAttribute('aria-valuenow')).toBe('50');
+  });
+
+  it('announces a spent bar and a shove recovery on the sprint meter itself', async () => {
+    const bridgeFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.append(document.createElement('canvas'));
+      callbacks.onReady?.();
+      callbacks.onSprintChange?.({
+        fraction: 0,
+        sprinting: false,
+        exhausted: true,
+        shoveCooldownFraction: 0,
+        recovering: true,
+      });
+      callbacks.onFeedback?.({ kind: 'SHOVE_TAKEN', message: 'Shoved · regaining your footing' });
+      return { destroy: () => undefined };
+    };
+    const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
+      joinRoom: vi.fn().mockResolvedValue(startedLobby),
+    }), bridgeFactory);
+
+    expect(await screen.findByLabelText(
+      'Sprint stamina 0 percent, spent — walk to recover, recovering from a shove',
+    )).toBeTruthy();
+    expect(screen.getByLabelText('Shove ready')).toBeTruthy();
+    // Exactly one polite live region, so the shove notice is not talked over.
+    expect(screen.getByRole('status').textContent).toContain('Shoved');
+  });
 });

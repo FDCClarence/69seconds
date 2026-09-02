@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
-import { movementVelocity, type MovementInput, type Vector2 } from '@69-seconds/shared';
-import type { DebugAction } from '../types.js';
+import type { MovementInput } from '@69-seconds/shared';
+import type { GameAction } from '../types.js';
 
 interface GameplayKeys {
   up: Phaser.Input.Keyboard.Key;
@@ -12,9 +12,13 @@ interface GameplayKeys {
   shove: Phaser.Input.Keyboard.Key;
 }
 
+/**
+ * Raw key state only. Velocity is deliberately not derived here: whether a held
+ * Shift counts as sprinting depends on the stamina bar, which the scene tracks
+ * and the server decides, so a velocity computed from the key alone would lie.
+ */
 export interface InputFrame {
   movement: MovementInput;
-  velocity: Vector2;
   sprinting: boolean;
 }
 
@@ -44,11 +48,10 @@ export class GameInput {
       left: this.keys.left.isDown,
       right: this.keys.right.isDown,
     };
-    const sprinting = this.keys.sprint.isDown;
-    return { movement, velocity: movementVelocity(movement, sprinting), sprinting };
+    return { movement, sprinting: this.keys.sprint.isDown };
   }
 
-  readAction(): DebugAction | 'INTERACT' | null {
+  readAction(): GameAction | null {
     if (Phaser.Input.Keyboard.JustDown(this.keys.interact)) return 'INTERACT';
     if (Phaser.Input.Keyboard.JustDown(this.keys.shove)) return 'SHOVE';
     return null;

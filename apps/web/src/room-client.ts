@@ -7,6 +7,8 @@ import {
   roomCommandResultSchema,
   roomPublicStateSchema,
   serverErrorSchema,
+  shoveLandedSchema,
+  shoveResultSchema,
   type ClientToServerEvents,
   type ClientInput,
   type GameSnapshot,
@@ -20,6 +22,9 @@ import {
   type ServerError,
   type ServerErrorCode,
   type ServerToClientEvents,
+  type ShoveLanded,
+  type ShoveRequest,
+  type ShoveResult,
 } from '@69-seconds/shared';
 import { io, type Socket } from 'socket.io-client';
 
@@ -44,8 +49,10 @@ export interface RoomClient {
   sendInput?(movement: MovementInput, sprint: boolean): ClientInput | null;
   subscribeSnapshots?(listener: (snapshot: GameSnapshot) => void): () => void;
   requestInteraction?(request: InteractionRequest): Promise<InteractionResult>;
+  requestShove?(request: ShoveRequest): Promise<ShoveResult>;
   subscribeLootSync?(listener: (sync: LootSync) => void): () => void;
   subscribeLootUpdates?(listener: (update: LootUpdate) => void): () => void;
+  subscribeShoveLanded?(listener: (event: ShoveLanded) => void): () => void;
 }
 
 export class RoomClientError extends Error {
@@ -76,6 +83,7 @@ class SocketRoomClient implements RoomClient {
   private readonly snapshotListeners = new Set<(snapshot: GameSnapshot) => void>();
   private readonly lootSyncListeners = new Set<(sync: LootSync) => void>();
   private readonly lootUpdateListeners = new Set<(update: LootUpdate) => void>();
+  private readonly shoveLandedListeners = new Set<(event: ShoveLanded) => void>();
   private nextInputSequence = 0;
 
   constructor(private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>) {
@@ -128,6 +136,14 @@ class SocketRoomClient implements RoomClient {
         return;
       }
       for (const listener of this.lootUpdateListeners) listener(parsed.data);
+    });
+    socket.on('shove:landed', (payload) => {
+      const parsed = shoveLandedSchema.safeParse(payload);
+      if (!parsed.success) {
+        this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received an invalid shove result', retryable: true });
+        return;
+      }
+      for (const listener of this.shoveLandedListeners) listener(parsed.data);
     });
   }
 
@@ -210,6 +226,11 @@ class SocketRoomClient implements RoomClient {
     return () => this.lootUpdateListeners.delete(listener);
   }
 
+  subscribeShoveLanded(listener: (event: ShoveLanded) => void): () => void {
+    this.shoveLandedListeners.add(listener);
+    return () => this.shoveLandedListeners.delete(listener);
+  }
+
   /**
    * Sends an interaction intent and resolves with the server's decision. The
    * request ID lets the server replay a committed decision if this call is
@@ -229,6 +250,31 @@ class SocketRoomClient implements RoomClient {
         const parsed = interactionResultSchema.safeParse(payload);
         if (!parsed.success) {
           reject(new RoomClientError('INVALID_PAYLOAD', 'The match server returned an invalid interaction result', true));
+          return;
+        }
+        resolve(parsed.data);
+      });
+    });
+  }
+
+  /**
+   * Sends a shove intent. The payload carries no direction: the server aims from
+   * the facing it derived from this player's movement inputs.
+   */
+  requestShove(request: ShoveRequest): Promise<ShoveResult> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket.connected) {
+        reject(new RoomClientError('INTERNAL_ERROR', 'Not connected to the match server', true));
+        return;
+      }
+      const timeout = window.setTimeout(() => {
+        reject(new RoomClientError('INTERNAL_ERROR', 'The match server did not acknowledge the shove', true));
+      }, 5_000);
+      this.socket.emit('shove:request', request, (payload: unknown) => {
+        window.clearTimeout(timeout);
+        const parsed = shoveResultSchema.safeParse(payload);
+        if (!parsed.success) {
+          reject(new RoomClientError('INVALID_PAYLOAD', 'The match server returned an invalid shove result', true));
           return;
         }
         resolve(parsed.data);

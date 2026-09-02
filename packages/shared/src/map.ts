@@ -79,3 +79,21 @@ export const GROCERY_STORE_CARTS: readonly CartDefinition[] = [
 ] as const;
 
 export const STORE_CENTRAL_SPAWN = { id: 'spawn-central', x: 900, y: 600 } as const;
+
+/**
+ * Cart footprints as collision. Walking over a cart stays deliberately allowed
+ * so depositing never feels fiddly; only knockback treats them as solid.
+ */
+export const GROCERY_STORE_CART_COLLISION: readonly CollisionRectangle[] = GROCERY_STORE_CARTS.map((cart) => ({
+  id: `${cart.id}-collision`,
+  x: cart.x,
+  y: cart.y,
+  width: cart.width,
+  height: cart.height,
+}));
+
+/** Everything a shove must not push a player through or into. */
+export const SHOVE_OBSTACLES: readonly CollisionRectangle[] = [
+  ...GROCERY_STORE_COLLISION,
+  ...GROCERY_STORE_CART_COLLISION,
+];

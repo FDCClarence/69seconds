@@ -24,6 +24,7 @@ describe('shared contracts', () => {
       phaseEndsAtMs: null,
       players: [{
         id: 'player-1', position: { x: 900, y: 600 }, sprinting: false,
+        stamina: 100, exhausted: false, recoveringUntilMs: null,
         acknowledgedInputSequence: 4,
       }],
     });
