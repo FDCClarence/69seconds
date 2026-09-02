@@ -3,6 +3,8 @@ import {
   GAME,
   canCarryItem,
   clientInputSchema,
+  loginRequestSchema,
+  registerRequestSchema,
   gameSnapshotSchema,
   normalizeMovementVector,
 } from './index.js';
@@ -35,5 +37,17 @@ describe('shared contracts', () => {
   it('enforces carry capacity and normalized movement', () => {
     expect(canCarryItem(GAME.maxCarriedItems)).toBe(false);
     expect(normalizeMovementVector({ x: 1, y: 1 }).x).toBeCloseTo(Math.SQRT1_2);
+  });
+
+  it('normalizes auth emails and strictly validates auth bodies', () => {
+    expect(registerRequestSchema.parse({
+      email: ' PLAYER@Example.COM ',
+      password: 'a-long-password',
+    }).email).toBe('player@example.com');
+    expect(() => loginRequestSchema.parse({
+      email: 'player@example.com',
+      password: 'password',
+      unexpected: true,
+    })).toThrow();
   });
 });

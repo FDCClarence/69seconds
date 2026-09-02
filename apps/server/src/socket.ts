@@ -31,9 +31,9 @@ function isValid<T>(schema: ZodType<T>, payload: unknown): payload is T {
   return schema.safeParse(payload).success;
 }
 
-export function attachSocketServer(httpServer: HttpServer, webOrigin: string): GameServer {
+export function attachSocketServer(httpServer: HttpServer, webOrigins: string[]): GameServer {
   const io: GameServer = new Server(httpServer, {
-    cors: { origin: webOrigin, credentials: true },
+    cors: { origin: webOrigins, credentials: true },
   });
 
   io.on('connection', (socket) => {

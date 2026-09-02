@@ -34,16 +34,16 @@ Owns React routes/screens, HTTP and Socket.IO clients, session UI state, accessi
 
 Active rooms live in one server process for the MVP. Redis, horizontal match distribution, replay storage, and durable match history are deferred.
 
-## HTTP and authentication flow (target, not yet implemented)
+## HTTP and authentication flow
 
 1. React sends register/login/logout/current-user requests over HTTPS with credentials included.
 2. Express validates JSON bodies against shared or server-owned request schemas.
-3. The auth service reads/writes PostgreSQL through Drizzle, hashes passwords, and creates opaque server-side sessions.
-4. Express sets an HTTP-only, Secure-in-production, deliberately configured SameSite cookie. JavaScript never reads a credential token.
+3. The auth service reads/writes PostgreSQL through Drizzle, hashes passwords with Argon2id, and creates 256-bit opaque server-side session tokens. PostgreSQL stores only SHA-256 token digests.
+4. Express sets a host-only, HTTP-only, Secure-in-production, deliberately configured SameSite cookie. JavaScript never reads a credential token. Login deletes the presented session before issuing a replacement.
 5. Protected HTTP middleware resolves the cookie to a trusted user and attaches that identity to the request.
 6. Responses expose only public user data and stable typed error codes.
 
-Auth, Drizzle, PostgreSQL, and cookie configuration belong to Step 2. The current `/api/health` route is deliberately unauthenticated.
+The committed migrations create normalized, uniquely indexed users and expiring sessions with cascading deletion. `requireAuth` resolves unexpired sessions and attaches the trusted database user to the request. Register/login share an IP rate limit. Exact-origin credentialed CORS, proxy hops, cookie lifetime, and SameSite policy are explicit environment configuration; production derives `Secure` from `NODE_ENV`. The `/api/health` route remains deliberately unauthenticated.
 
 ## Socket.IO connection and message flow
 
