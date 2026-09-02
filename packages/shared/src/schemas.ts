@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { GAME, SPRINT } from './constants.js';
+import { LOOT_CATEGORIES } from './loot.js';
 
 export const gamePhaseSchema = z.enum(['LOBBY', 'COUNTDOWN', 'LOOTING', 'TALLY']);
 export const playerConnectionStateSchema = z.enum(['CONNECTED', 'RECONNECTING']);
@@ -101,6 +102,42 @@ export const lootUpdateSchema = z.discriminatedUnion('type', [
     carriedCount: z.literal(0),
   }),
 ]);
+
+export const lootCategorySchema = z.enum(LOOT_CATEGORIES);
+
+export const tallyItemSchema = z.strictObject({
+  id: itemIdSchema,
+  catalogId: z.string().min(1).max(64),
+  label: z.string().min(1).max(64),
+  category: lootCategorySchema,
+});
+
+export const tallyCategoryTotalSchema = z.strictObject({
+  category: lootCategorySchema,
+  count: z.number().int().nonnegative(),
+});
+
+export const tallyPlayerResultSchema = z.strictObject({
+  playerId: playerIdSchema,
+  displayName: z.string().trim().min(1).max(32),
+  slot: z.number().int().min(0).max(GAME.maxPlayers - 1),
+  isConnectedAtEnd: z.boolean(),
+  items: z.array(tallyItemSchema).max(256),
+  categoryTotals: z.array(tallyCategoryTotalSchema).max(LOOT_CATEGORIES.length),
+  totalItems: z.number().int().nonnegative(),
+});
+
+/** One immutable server decision, broadcast once and replayed verbatim on reconnection. */
+export const matchTallySchema = z.strictObject({
+  resultId: z.string().min(1).max(128),
+  roomCode: roomCodeSchema,
+  lootingStartedAtMs: z.number().int().nonnegative(),
+  lootingEndedAtMs: z.number().int().nonnegative(),
+  durationMs: z.literal(GAME.lootingDurationMs),
+  players: z.array(tallyPlayerResultSchema).min(1).max(GAME.maxPlayers),
+  categoryTotals: z.array(tallyCategoryTotalSchema).max(LOOT_CATEGORIES.length),
+  totalItems: z.number().int().nonnegative(),
+});
 
 export const snapshotPlayerStateSchema = z.strictObject({
   id: z.string().min(1).max(128),
@@ -351,6 +388,10 @@ export type CartPublicState = z.infer<typeof cartPublicStateSchema>;
 export type CarriedCount = z.infer<typeof carriedCountSchema>;
 export type LootSync = z.infer<typeof lootSyncSchema>;
 export type LootUpdate = z.infer<typeof lootUpdateSchema>;
+export type TallyItem = z.infer<typeof tallyItemSchema>;
+export type TallyCategoryTotal = z.infer<typeof tallyCategoryTotalSchema>;
+export type TallyPlayerResult = z.infer<typeof tallyPlayerResultSchema>;
+export type MatchTally = z.infer<typeof matchTallySchema>;
 export type SnapshotPlayerState = z.infer<typeof snapshotPlayerStateSchema>;
 export type GameSnapshot = z.infer<typeof gameSnapshotSchema>;
 export type ClientInput = z.infer<typeof clientInputSchema>;

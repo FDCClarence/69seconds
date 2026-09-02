@@ -4,13 +4,13 @@
 
 69 Seconds is a private-room browser game for one to four players. A match covers one grocery-store looting round: players leave a shared central spawn, collect shared items, carry at most four at once, deposit them in their assigned carts, and see a tally after exactly 69 server-timed seconds. Later resource-management phases are not part of this version.
 
-This document defines the intended first playable. Authentication, the private-room lobby lifecycle, Phaser movement, authoritative multiplayer movement, and authoritative loot collection and cart deposits are implemented; the sprint resource, shove, timer/tally, and later match mechanics remain later milestones.
+This document defines the implemented first playable. Authentication, the private-room lifecycle, Phaser movement, authoritative movement/loot/sprint/shove rules, the exact server timer, and the final tally are complete. Later resource-management phases remain out of scope.
 
 ## Match lifecycle
 
 1. **LOBBY** — Players join a private room, see membership/readiness, and wait for the host. Only the server may accept a start request and transition the room.
 2. **COUNTDOWN** — The roster is fixed for the round, gameplay input cannot move or interact, and the server announces an absolute phase end time. The initial target is three seconds.
-3. **LOOTING** — The server enables gameplay and sets `phaseEndsAtMs` to its current time plus exactly 69,000 ms. Players move, sprint, pick up/deposit loot, and shove subject to server validation.
+3. **LOOTING** — The server enables gameplay and sets `phaseEndsAtMs` to the scheduled countdown boundary plus exactly 69,000 ms. Players move, sprint, pick up/deposit loot, and shove subject to server validation.
 4. **TALLY** — At the server deadline, movement, pickups, deposits, and shoves stop. The authoritative deposited items are tallied and displayed to every player.
 
 Phase transitions are one-way for a match: `LOBBY → COUNTDOWN → LOOTING → TALLY`. A rematch lifecycle is out of scope until explicitly specified.
@@ -168,7 +168,7 @@ is already standing inside a cart is pushed out of it rather than pinned there.
 - Other players' carts cannot receive a player's deposit.
 - Simultaneous conflicts are resolved by server processing order; every client receives the resulting authoritative state.
 
-Exact item values, the spawn table, and scoring presentation are intentionally deferred to their focused build steps.
+Items retain their catalog labels and one of six presentation categories: produce, bakery, dairy, pantry, drinks, or household. The tally counts deposited item instances rather than assigning future resource values or building later bunker mechanics.
 
 ## Timing and tally
 
@@ -176,7 +176,10 @@ Exact item values, the spawn table, and scoring presentation are intentionally d
 - Clients render time remaining from server timestamps and snapshots; a client clock never ends or extends the phase.
 - Once the deadline is reached, the server transitions before accepting further gameplay effects.
 - TALLY reflects deposited loot only. Carried but undeposited items do not count unless a later product decision explicitly changes this rule.
-- Every connected player sees the same final authoritative result.
+- The first tick at or beyond the deadline freezes one immutable match result from the cart authority. It contains per-player item lists, per-player category totals, match category totals, and stable server timestamps.
+- The server broadcasts that result once as `match:tally`; a rostered player reconnecting during the 15-second grace window receives the same committed result verbatim.
+- A player disconnected at the buzzer remains represented in the result. Later roster removal or host migration cannot rewrite it.
+- Every connected player sees the same final authoritative result, and may safely leave the completed room for home. Rematch/restart controls do not exist in `TALLY`.
 
 ## Acceptance criteria for the first playable
 
@@ -212,4 +215,4 @@ Exact item values, the spawn table, and scoring presentation are intentionally d
 
 ## Current implementation boundary
 
-The 30 Hz server simulation now owns movement, the sprint stamina resource, bounds, shelf collision, spawn assignment, and the `COUNTDOWN → LOOTING` transition. Clients predict local movement and reconcile by acknowledged input sequence; remote movement is buffered and interpolated from 20 Hz compact snapshots. The same simulation now also owns loot availability, carried inventories, and cart deposits, deciding every pickup and deposit atomically and answering each request with a typed acknowledgement. It additionally owns each player's derived facing, shove decisions, knockback sweeps, and recovery windows. Scoring, the complete timer/tally flow, durable room recovery, Tiled JSON, and Playwright browser coverage remain out of scope for this milestone. MySQL/Drizzle stores accounts and sessions, while rooms and matches remain intentionally process-local.
+The 30 Hz server simulation owns movement, stamina, collision, spawn assignment, the complete phase graph, loot/cart state, shove effects, and the immutable final tally. Clients predict local movement and presentation only, reconcile from validated server messages, destroy Phaser on `TALLY`, and render the committed result in React. Durable match history, future scoring/resource conversion, Tiled JSON, and Playwright browser coverage remain out of scope. MySQL/Drizzle stores accounts and sessions, while rooms and completed match results remain intentionally process-local.

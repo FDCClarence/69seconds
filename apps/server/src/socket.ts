@@ -137,6 +137,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     cors: { origin: options.webOrigins, credentials: true },
   });
   const simulations = new Map<string, AuthoritativeRoomSimulation>();
+  const now = options.rooms?.now ?? Date.now;
   const rooms = new RoomRegistry({
     ...options.rooms,
     onEvent(event) {
@@ -168,12 +169,17 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     socket.emit('loot:sync', simulation.lootSyncFor(playerId));
   }
 
+  function sendTallyTo(socket: GameSocket, roomCode: string): void {
+    const tally = simulations.get(roomCode)?.tally();
+    if (tally) socket.emit('match:tally', tally);
+  }
+
   function broadcastLootUpdate(roomCode: string, update: LootUpdate | null): void {
     if (update) io.to(roomCode).emit('loot:update', update);
   }
 
   const simulationTimer = setInterval(() => {
-    const serverNowMs = Date.now();
+    const serverNowMs = now();
     for (const simulation of simulations.values()) {
       const result = simulation.tick(serverNowMs);
       if (!result.snapshotDue && !result.phaseChanged) continue;
@@ -185,6 +191,10 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       }
       io.to(simulation.roomCode).emit('state:snapshot', snapshot);
       if (result.phaseChanged) io.to(simulation.roomCode).emit('lobby:state', room);
+      if (result.tallyCommitted) {
+        const tally = simulation.tally();
+        if (tally) io.to(simulation.roomCode).emit('match:tally', tally);
+      }
     }
   }, 1_000 / NETWORK.simulationTickRateHz);
   simulationTimer.unref?.();
@@ -229,12 +239,15 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
 
     const recovered = rooms.reconnect(identity, socket.id);
     if (recovered) {
-      simulations.get(recovered.code)?.resetInput(playerId, true);
+      const simulation = simulations.get(recovered.code);
+      simulation?.resetInput(playerId, true);
+      simulation?.synchronizePlayers(recovered);
       socket.data.roomCode = recovered.code;
       void Promise.resolve(socket.join(recovered.code))
         .then(() => {
           io.to(recovered.code).emit('lobby:state', recovered);
-          sendLootSyncTo(socket, recovered.code, playerId);
+          if (recovered.phase === 'TALLY') sendTallyTo(socket, recovered.code);
+          else sendLootSyncTo(socket, recovered.code, playerId);
         })
         .catch((error: unknown) => console.error(error));
     }
@@ -281,6 +294,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       try {
         const room = rooms.leave(playerId);
         if (code) broadcastLootUpdate(code, simulations.get(code)?.removePlayer(playerId) ?? null);
+        if (code && !room) simulations.delete(code);
         if (code) {
           for (const connectedSocket of io.sockets.sockets.values()) {
             if (connectedSocket.data.playerId !== playerId) continue;
@@ -320,7 +334,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
         const simulation = new AuthoritativeRoomSimulation(room, options.loot ?? {}, options.shove ?? {});
         simulations.set(room.code, simulation);
         io.to(room.code).emit('lobby:state', room);
-        io.to(room.code).emit('state:snapshot', simulation.snapshot(Date.now()));
+        io.to(room.code).emit('state:snapshot', simulation.snapshot(now()));
         sendLootSync(room);
         reply(acknowledge, roomCommandResultSchema.parse({ ok: true, room }));
       } catch (error) {
@@ -336,7 +350,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       }
       const code = rooms.roomForPlayer(playerId);
       if (!code) return;
-      simulations.get(code)?.submitInput(playerId, parsed.data);
+      simulations.get(code)?.submitInput(playerId, parsed.data, now());
     });
 
     socket.on('interaction:request', (payload, acknowledge) => {
@@ -352,7 +366,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
         acknowledge?.(interactionRejection(parsed.data.requestId, code ? 'INVALID_PHASE' : 'NOT_IN_MATCH'));
         return;
       }
-      const resolution = simulation.resolveInteraction(playerId, parsed.data, Date.now());
+      const resolution = simulation.resolveInteraction(playerId, parsed.data, now());
       acknowledge?.(resolution.result);
       // A replayed request ID reports its original decision and changes nothing.
       broadcastLootUpdate(code, resolution.update);
@@ -371,7 +385,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
         acknowledge?.(shoveRejection(parsed.data.requestId, code ? 'INVALID_PHASE' : 'NOT_IN_MATCH'));
         return;
       }
-      const resolution = simulation.resolveShove(playerId, parsed.data, Date.now());
+      const resolution = simulation.resolveShove(playerId, parsed.data, now());
       acknowledge?.(resolution.result);
       // A replayed request ID reports its original decision and shoves nobody twice.
       if (resolution.landed) io.to(code).emit('shove:landed', resolution.landed);
@@ -381,7 +395,10 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       const code = rooms.roomForPlayer(playerId);
       if (code) simulations.get(code)?.resetInput(playerId, true);
       const room = rooms.disconnect(playerId, socket.id);
-      if (room) io.to(room.code).emit('lobby:state', room);
+      if (room) {
+        simulations.get(room.code)?.synchronizePlayers(room);
+        io.to(room.code).emit('lobby:state', room);
+      }
     });
   });
 

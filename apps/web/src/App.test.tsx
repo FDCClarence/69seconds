@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { ApiError, type AuthApi } from './api.js';
-import type { RoomPublicState } from '@69-seconds/shared';
-import type { RoomClient } from './room-client.js';
+import type { MatchTally, RoomPublicState } from '@69-seconds/shared';
+import type { RoomClient, RoomClientListeners } from './room-client.js';
 import type { GroceryGameFactory } from './game/types.js';
 
 const player = {
@@ -284,5 +284,77 @@ describe('authentication application', () => {
     expect(screen.getByLabelText('Shove ready')).toBeTruthy();
     // Exactly one polite live region, so the shove notice is not talked over.
     expect(screen.getByRole('status').textContent).toContain('Shoved');
+  });
+
+  it('displays the looting clock from server timestamps', async () => {
+    const looting: RoomPublicState = {
+      ...lobby,
+      phase: 'LOOTING',
+      serverTimeMs: 5_000,
+      phaseEndsAtMs: 5_000 + 69_000,
+    };
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
+      joinRoom: vi.fn().mockResolvedValue(looting),
+    }));
+    expect(await screen.findByText('LOOTING · 1:09')).toBeTruthy();
+  });
+
+  it('destroys Phaser at TALLY, waits for the server result, and renders the immutable tally', async () => {
+    let listeners: RoomClientListeners | undefined;
+    const destroy = vi.fn();
+    const started: RoomPublicState = { ...lobby, phase: 'LOOTING', phaseEndsAtMs: 70_000 };
+    const tallyRoom: RoomPublicState = { ...started, phase: 'TALLY', phaseEndsAtMs: null };
+    const result: MatchTally = {
+      resultId: 'ABC234:70000',
+      roomCode: 'ABC234',
+      lootingStartedAtMs: 1_000,
+      lootingEndedAtMs: 70_000,
+      durationMs: 69_000,
+      totalItems: 2,
+      categoryTotals: [{ category: 'dairy', count: 1 }, { category: 'bakery', count: 1 }],
+      players: [{
+        playerId: player.id,
+        displayName: player.username,
+        slot: 0,
+        isConnectedAtEnd: true,
+        totalItems: 2,
+        categoryTotals: [{ category: 'dairy', count: 1 }, { category: 'bakery', count: 1 }],
+        items: [
+          { id: 'loot-milk', catalogId: 'milk', label: 'Milk', category: 'dairy' },
+          { id: 'loot-bread', catalogId: 'bread', label: 'Bread', category: 'bakery' },
+        ],
+      }],
+    };
+    const rooms = roomClientStub({
+      subscribe: vi.fn((next) => {
+        listeners = next;
+        next.onConnection('CONNECTED');
+        return () => undefined;
+      }),
+      joinRoom: vi.fn().mockResolvedValue(started),
+    });
+    const gameFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.append(document.createElement('canvas'));
+      callbacks.onReady?.();
+      return { destroy };
+    };
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms, gameFactory);
+    await screen.findByRole('application', { name: /grocery store prototype/i });
+
+    act(() => listeners?.onRoom(tallyRoom));
+    expect(await screen.findByText('Waiting for the server’s final tally…')).toBeTruthy();
+    expect(screen.queryByRole('application')).toBeNull();
+    expect(destroy).toHaveBeenCalledWith(true);
+
+    act(() => listeners?.onResult?.(result));
+    expect(await screen.findByRole('heading', { name: 'Time’s up' })).toBeTruthy();
+    expect(screen.getByLabelText('2 items deposited in total')).toBeTruthy();
+    expect(screen.getByText('Milk')).toBeTruthy();
+    expect(screen.getByText('Bread')).toBeTruthy();
+    expect(screen.getByText('Present at the buzzer')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Return home' }));
+    await waitFor(() => expect(rooms.leaveRoom).toHaveBeenCalledOnce());
+    expect(await screen.findByRole('button', { name: 'Create room' })).toBeTruthy();
   });
 });

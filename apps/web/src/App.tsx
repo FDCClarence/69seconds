@@ -1,4 +1,11 @@
-import { GAME, roomCodeSchema, type PublicUser, type RoomPublicState } from '@69-seconds/shared';
+import {
+  GAME,
+  roomCodeSchema,
+  type LootCategory,
+  type MatchTally,
+  type PublicUser,
+  type RoomPublicState,
+} from '@69-seconds/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { authApi, ApiError, type AuthApi } from './api.js';
 import { MatchGame } from './game/react/MatchGame.js';
@@ -83,6 +90,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
   const [restoreError, setRestoreError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [room, setRoom] = useState<RoomPublicState | null>(null);
+  const [matchTally, setMatchTally] = useState<MatchTally | null>(null);
   const [connection, setConnection] = useState<SocketConnectionState>('DISCONNECTED');
 
   const navigate = useCallback((destination: Route, replace = false) => {
@@ -113,10 +121,12 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
   }, []);
   useEffect(() => rooms.subscribe({
     onRoom: setRoom,
+    onResult: setMatchTally,
     onConnection: setConnection,
     onError: (error) => setNotice(roomErrorMessage(error)),
     onClosed: () => {
       setRoom(null);
+      setMatchTally(null);
       window.history.replaceState({}, '', '/home');
       setRoute('/home');
       setNotice('That room closed after everyone left.');
@@ -137,6 +147,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
     if (room) await rooms.leaveRoom().catch(() => undefined);
     rooms.disconnect();
     setRoom(null);
+    setMatchTally(null);
     await api.logout();
     setAuth({ status: 'anonymous' });
     window.history.replaceState({}, '', '/');
@@ -144,12 +155,14 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
   }, [api, room, rooms]);
 
   const createRoom = useCallback(async () => {
+    setMatchTally(null);
     const created = await rooms.createRoom();
     setRoom(created);
     navigate(`/room/${created.code}`);
   }, [navigate, rooms]);
 
   const joinRoom = useCallback(async (code: string) => {
+    setMatchTally(null);
     const joined = await rooms.joinRoom(code);
     setRoom(joined);
     navigate(`/room/${joined.code}`);
@@ -158,6 +171,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
   const leaveRoom = useCallback(async () => {
     await rooms.leaveRoom();
     setRoom(null);
+    setMatchTally(null);
     navigate('/home');
   }, [navigate, rooms]);
 
@@ -179,12 +193,16 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
     return <Lobby
       code={code}
       room={room?.code === code ? room : null}
+      matchTally={matchTally?.roomCode === code ? matchTally : null}
       user={auth.user}
       connection={connection}
       roomClient={rooms}
       onJoin={joinRoom}
       onReady={async (ready) => { setRoom(await rooms.setReady(ready)); }}
-      onStart={async () => { setRoom(await rooms.startMatch()); }}
+      onStart={async () => {
+        setMatchTally(null);
+        setRoom(await rooms.startMatch());
+      }}
       onLeave={leaveRoom}
       onLogout={logout}
       gameFactory={gameFactory}
@@ -426,9 +444,10 @@ function Home({ user, notice, onLogout, onCreate, onJoin }: {
   </main>;
 }
 
-function Lobby({ code, room, user, connection, roomClient, onJoin, onReady, onStart, onLeave, onLogout, gameFactory }: {
+function Lobby({ code, room, matchTally, user, connection, roomClient, onJoin, onReady, onStart, onLeave, onLogout, gameFactory }: {
   code: string;
   room: RoomPublicState | null;
+  matchTally: MatchTally | null;
   user: PublicUser;
   connection: SocketConnectionState;
   roomClient: RoomClient;
@@ -468,6 +487,9 @@ function Lobby({ code, room, user, connection, roomClient, onJoin, onReady, onSt
   }
 
   const self = room.players.find((player) => player.id === user.id);
+  if (room.phase === 'TALLY') {
+    return <TallyScreen room={room} result={matchTally} user={user} onLeave={onLeave} onLogout={onLogout} />;
+  }
   if (room.phase !== 'LOBBY') {
     return <MatchGame
       room={room}
@@ -526,6 +548,72 @@ function Lobby({ code, room, user, connection, roomClient, onJoin, onReady, onSt
         </button>}
         <button className="link leave" type="button" disabled={busy} onClick={() => void act(onLeave)}>Leave room</button>
       </div>
+    </div>
+  </main>;
+}
+
+const CATEGORY_LABELS: Record<LootCategory, string> = {
+  produce: 'Produce',
+  bakery: 'Bakery',
+  dairy: 'Dairy',
+  pantry: 'Pantry',
+  drinks: 'Drinks',
+  household: 'Household',
+};
+
+function TallyScreen({ room, result, user, onLeave, onLogout }: {
+  room: RoomPublicState;
+  result: MatchTally | null;
+  user: PublicUser;
+  onLeave: () => Promise<void>;
+  onLogout: () => Promise<void>;
+}) {
+  const [leaving, setLeaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function returnHome() {
+    setLeaving(true);
+    setError(null);
+    try { await onLeave(); } catch (cause) { setError(roomErrorMessage(cause)); } finally { setLeaving(false); }
+  }
+
+  return <main className="page tally-page">
+    <TopBar user={user} onLogout={onLogout} />
+    <div className="tally-shell">
+      <header className="tally-header">
+        <div><p className="label">Room {room.code}</p><h1>Time’s up</h1></div>
+        {result && <strong aria-label={`${result.totalItems} items deposited in total`}>
+          {result.totalItems}<span>items banked</span>
+        </strong>}
+      </header>
+      {!result ? <div className="panel tally-loading" role="status" aria-live="polite">
+        <p>Waiting for the server’s final tally…</p>
+      </div> : <>
+        <section className="tally-categories" aria-label="Match category totals">
+          {result.categoryTotals.length > 0 ? result.categoryTotals.map((total) => <div key={total.category}>
+            <span>{CATEGORY_LABELS[total.category]}</span><strong>{total.count}</strong>
+          </div>) : <p>No items reached a cart before the deadline.</p>}
+        </section>
+        <ol className="tally-players" aria-label="Player results">
+          {result.players.map((player) => <li key={player.playerId} className={player.playerId === user.id ? 'is-self' : undefined}>
+            <header>
+              <div><span>Cart {player.slot + 1}</span><h2>{player.displayName}{player.playerId === user.id ? ' (you)' : ''}</h2></div>
+              <strong aria-label={`${player.totalItems} items`}>{player.totalItems}</strong>
+            </header>
+            <p className="tally-connection">{player.isConnectedAtEnd ? 'Present at the buzzer' : 'Disconnected at the buzzer'}</p>
+            {player.items.length > 0 ? <ul className="tally-items">
+              {player.items.map((item) => <li key={item.id}><span>{item.label}</span><small>{CATEGORY_LABELS[item.category]}</small></li>)}
+            </ul> : <p className="tally-empty">No deposited items</p>}
+            {player.categoryTotals.length > 0 && <p className="tally-player-categories">
+              {player.categoryTotals.map((total) => `${CATEGORY_LABELS[total.category]} ${total.count}`).join(' · ')}
+            </p>}
+          </li>)}
+        </ol>
+      </>}
+      {error && <p className="alert" role="alert">{error}</p>}
+      <button className="button primary tally-home" type="button" disabled={leaving} onClick={() => void returnHome()}>
+        {leaving ? 'Leaving room…' : 'Return home'}
+      </button>
     </div>
   </main>;
 }

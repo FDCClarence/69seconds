@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Step 9 complete: sprint is a server-owned stamina resource and shove is a real authoritative mechanic, with server-derived facing, swept knockback that cannot leave a player in invalid geometry, a deterministic single winner for mutual shoves, and typed idempotent acknowledgements that always restate the cooldown.
+Step 10 complete: the server now owns the full `LOBBY → COUNTDOWN → LOOTING → TALLY` lifecycle, freezes one immutable tally at the exact 69-second deadline, replays it on reconnection, and drives a React result screen that cleanly tears down Phaser.
 
 ## Implemented
 
@@ -82,6 +82,15 @@ Step 9 complete: sprint is a server-owned stamina resource and shove is a real a
 - The React HUD gained accessible sprint and shove meters. Scene-to-React sprint updates are coalesced on a change signature, so a 60 Hz render loop does not drive a React update every frame. Both meters carry their state in their own labels and the visual note is `aria-hidden`, keeping exactly one polite live region on screen so a shove notice is never talked over.
 - The redundant `onAction` bridge callback and its `SHOVE_DEBUG` feedback kind are removed; `onFeedback` already carries every shove outcome.
 
+- The simulation now completes the one-way `LOBBY → COUNTDOWN → LOOTING → TALLY` flow. `LOOTING` begins at the scheduled countdown boundary even when a timer callback is late, and its deadline is exactly that boundary plus 69,000 ms rather than the callback's arrival time.
+- At or beyond the looting deadline, the simulation changes phase before applying movement, clears effective sprinting, and rejects new movement input. Interaction and shove authorities compare their receive timestamp with the same deadline, so a request delivered at the exact boundary or before a delayed phase tick is still refused as `INVALID_PHASE`.
+- The first ending tick reads deposited items from `MatchLootAuthority` and freezes one strict `MatchTally`. Stable cart slots preserve attribution to every original participant, including someone disconnected at the buzzer; carried but undeposited items never count.
+- Grocery catalog entries now carry one of six useful result categories: produce, bakery, dairy, pantry, drinks, or household. The result contains each player's item list, per-player category totals, match category totals, connection-at-buzzer status, and the exact server start/end timestamps.
+- `match:tally` is broadcast once after the room reaches `TALLY`. Repeated ticks reuse the same committed result and emit no duplicate completion, while a player reconnecting during the existing grace period receives that result verbatim instead of a mutable loot sync.
+- The 20 Hz movement stream stops after the final `TALLY` snapshot. Completed rooms become event-driven rather than continuing to send irrelevant movement state.
+- The React match HUD displays countdown and looting time by extrapolating validated server timestamps; reaching zero never triggers a client phase decision. The authoritative `TALLY` room state immediately replaces `MatchGame`, which destroys Phaser, removes its canvas/listeners/subscriptions, and renders the React tally as soon as the server result arrives.
+- The tally presents aggregate categories, every player's cart, item names, per-player categories, and whether the player was connected at the buzzer. A safe Return home action performs the existing authoritative room leave; no restart/rematch control can mutate the completed result.
+
 ## Networking and prototype tuning
 
 - Walk speed: 150 pixels/second.
@@ -111,7 +120,10 @@ Completed on 2026-09-02 with Node.js 22.6.0, npm 10.8.2, Phaser 4.2.1, and Vites
 
 - `npm run lint` — passed with no errors or warnings.
 - `npm run typecheck` — passed in all three workspaces.
-- `npm test` — passed 136 tests: 34 shared, 68 server, and 34 web. The command ran with permission to bind an ephemeral localhost port; all nineteen Socket.IO integration tests passed. The 7 MySQL auth integration cases remain skipped because `TEST_DATABASE_URL` was not supplied.
+- `npm test` — passed 144 tests: 35 shared, 73 server, and 36 web. The command ran with permission to bind an ephemeral localhost port; all twenty Socket.IO integration tests passed. The 7 MySQL auth integration cases remain skipped because `TEST_DATABASE_URL` was not supplied.
+- New deadline/tally simulation coverage validates the exact scheduled 69-second window, accepted state immediately before the boundary, rejected movement/interactions/shoves at the boundary, one immutable cart-derived result, useful category totals, disconnected-player representation, duplicate ending ticks, and a delayed timer catching up directly to the same final state.
+- New Socket.IO phase coverage advances an injected authoritative clock through `COUNTDOWN`, `LOOTING`, and `TALLY`; observes one result broadcast, rejects a delayed gameplay packet, confirms no duplicate end event on later ticks, replays the identical result after reconnect, and refuses a host restart in `TALLY`.
+- New React coverage validates the server-derived 1:09 looting display, immediate Phaser destruction while the tally event is still in flight, final item/category/connection rendering, and the safe Return home path.
 - New deterministic sprint coverage validates a full unlatched start, drain only while genuinely sprinting, a held Shift while standing still refilling instead, the documented 8.3-second full-bar burst, the half-rate refill, the exhaustion latch holding below the re-engage floor and clearing at it, the documented empty-to-floor recovery, clamping at both ends, rejection of a non-advancing or non-finite step, and the roughly 28-of-69-seconds match budget.
 - New deterministic shove geometry coverage validates a target dead ahead and one behind, the cone half-angle one degree inside and outside on both sides, a degenerate facing and a target underfoot, a full push across open floor, stopping short of a shelf rather than tunnelling, stopping at the map boundary, stopping before a cart footprint that plain movement would cross, pushing a player already inside a cart back out of it, degenerate pushes moving nobody, and an exhaustive sweep proving every push from every shelf edge in sixteen directions lands in legal geometry within the configured distance.
 - New deterministic shove authority coverage validates a landed nominated shove with its cooldown and recovery deadlines, out-of-range and out-of-cone refusals, reaching through geometry via an injected thin partition, self-targeting, unknown and ineligible targets, server-chosen nearest targets skipping players behind or disconnected, an empty cone, cooldown enforcement and expiry, a mutual exchange resolving to one winner, a spammed burst hitting the limiter while eight cooldown-paced shoves all land, duplicate-request replay, phase and deadline closure, an absent shover, pushing away from the shover rather than along the facing, and a shortened push against geometry reporting the distance actually applied.
@@ -128,7 +140,6 @@ Completed on 2026-09-02 with Node.js 22.6.0, npm 10.8.2, Phaser 4.2.1, and Vites
 ## Known limitations
 
 - Active rooms are intentionally process-local and disappear on server restart. Production must use one application replica until a shared room store and Socket.IO adapter are designed; Redis remains deferred.
-- Deposited items are counted but not yet scored or presented as a result; the atomic `LOOTING → TALLY` flow that reads cart contents remains Step 10.
 - Line-of-access validation is defence in depth for future map data, for both interactions and shoves. The current 72-pixel shelves plus two 15-pixel player radii exceed both the 64-pixel item reach and the 78-pixel shove range, so production geometry cannot currently place two players on opposite sides of one shelf within reach; the rejection is covered with an injected thin partition.
 - `attachSocketServer`, `MatchLootAuthority`, and `MatchShoveAuthority` accept injected spawns, carts, collision, and knockback obstacles, and `RoomRegistry` accepts an injected countdown duration. These are test seams; production always uses the shared store map and the 3-second countdown. No balance value is injectable: sprint and shove tuning lives only in `packages/shared/src/constants.ts`.
 - Knockback is an impulse resolved at shove time rather than a decaying velocity carried over several ticks. It is deterministic, atomic, and cannot leave a player in invalid geometry, but the push arrives in one step rather than easing out; a smoother presentation would be a rendering concern layered on the same authoritative landing spot.
@@ -136,7 +147,6 @@ Completed on 2026-09-02 with Node.js 22.6.0, npm 10.8.2, Phaser 4.2.1, and Vites
 - The recovery window freezes a target's movement but not their interactions, so a shoved player who somehow stays in range could still complete a pickup. The 96-pixel knockback normally carries them out of the 64-pixel item reach, so displacement rather than an action lockout is what denies the pickup; extending recovery into the loot authority was deliberately left out of scope.
 - A player sprinting into a wall still spends stamina, because drain follows the movement input rather than the distance actually travelled. This keeps the shared resolver dependent on input alone, which is what lets the client predict it exactly.
 - The shove facing cone is checked against the server's derived facing, while the client's `CTRL shove` prompt uses its own locally derived facing. They agree in practice because both come from the same input stream, but a prompt can briefly disagree with the server under heavy packet loss, exactly as the loot prompts can.
-- The simulation records the authoritative 69-second looting deadline and stops movement at it, but the complete atomic `LOOTING → TALLY` result flow remains Step 10.
 - The generated grocery store, player, shelves, carts, and item markers remain original placeholders rather than Tiled/sprite assets. Collision and loot placement are nevertheless server-authoritative.
 - Player display labels are the account username; profiles carry no separate display name or avatar yet, so the account menu shows a letter tile built from the username.
 - Browser-level multi-context Playwright coverage is still deferred; the current multiplayer lifecycle coverage uses real Socket.IO server/client connections at the server integration layer.
@@ -146,4 +156,4 @@ Completed on 2026-09-02 with Node.js 22.6.0, npm 10.8.2, Phaser 4.2.1, and Vites
 
 ## Recommended next step
 
-Proceed exactly to Step 10 in `CODEX_BUILD_PROMPTS.md`: the server-owned 69-second timer, the atomic end of looting, and the tally. The simulation already records and enforces the looting deadline and closes movement, interactions, and shoves at it, so Step 10 is the `LOOTING → TALLY` transition and the result presentation rather than new timing authority. Read cart contents from `MatchLootAuthority`, which is already the single source of deposited items, and keep the tally a committed server decision broadcast once rather than a value any client computes.
+Proceed to Step 11 in `CODEX_BUILD_PROMPTS.md`: game feel, visual hierarchy, audio hooks, and accessibility polish. Keep the completed authority boundaries unchanged: the server owns phases, deadline, loot, sprint, shove, and the immutable tally, while Phaser and React remain presentation layers.

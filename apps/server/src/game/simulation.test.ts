@@ -342,3 +342,102 @@ describe('authoritative shove effects', () => {
       .toMatchObject({ outcome: 'REJECTED', reason: 'TARGET_UNAVAILABLE' });
   });
 });
+
+describe('atomic end-of-looting tally', () => {
+  function tallySimulation() {
+    const base = room(2);
+    base.players[0]!.position = { x: 900, y: 600 };
+    base.players[1]!.position = { x: 1_100, y: 600 };
+    return { base, simulation: new AuthoritativeRoomSimulation(base, {
+      spawns: [
+        { id: 'loot-apples', catalogId: 'apples', x: 900, y: 600 },
+        { id: 'loot-soap', catalogId: 'soap', x: 1_100, y: 600 },
+      ],
+      carts: [
+        { id: 'cart-0', slot: 0, label: 'Cart 1', x: 900, y: 600, width: 128, height: 72 },
+        { id: 'cart-1', slot: 1, label: 'Cart 2', x: 1_100, y: 600, width: 128, height: 72 },
+      ],
+      collision: [],
+    }) };
+  }
+
+  it('uses the scheduled countdown boundary for an exact 69-second window', () => {
+    const { simulation } = tallySimulation();
+    simulation.tick(2_037);
+    expect(simulation.snapshot(2_037)).toMatchObject({
+      phase: 'LOOTING',
+      phaseEndsAtMs: 2_000 + GAME.lootingDurationMs,
+    });
+  });
+
+  it('freezes cart contents once and rejects every intent at the exact deadline', () => {
+    const { base, simulation } = tallySimulation();
+    simulation.tick(2_000);
+    const pickup = simulation.resolveInteraction('player-0', {
+      requestId: '00000000-0000-4000-8000-000000000201',
+      action: 'PICK_UP',
+      targetId: 'loot-apples',
+    }, 2_001);
+    expect(pickup.result.outcome).toBe('PICKED_UP');
+    const deposit = simulation.resolveInteraction('player-0', {
+      requestId: '00000000-0000-4000-8000-000000000202',
+      action: 'DROP_OFF',
+      targetId: 'cart-0',
+    }, 2_002);
+    expect(deposit.result.outcome).toBe('DEPOSITED');
+
+    base.players[1]!.isConnected = false;
+    base.players[1]!.connectionState = 'RECONNECTING';
+    simulation.synchronizePlayers(base);
+    const deadline = 2_000 + GAME.lootingDurationMs;
+    const before = playerIn(simulation, deadline - 1, 'player-0').position;
+    expect(simulation.submitInput('player-0', input(90), deadline)).toBe(false);
+    expect(simulation.resolveInteraction('player-0', {
+      requestId: '00000000-0000-4000-8000-000000000203',
+      action: 'PICK_UP',
+      targetId: 'loot-soap',
+    }, deadline).result).toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
+    expect(simulation.resolveShove('player-0', shove('player-1'), deadline).result)
+      .toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
+
+    const ended = simulation.tick(deadline);
+    expect(ended).toMatchObject({ phaseChanged: true, tallyCommitted: true });
+    expect(playerIn(simulation, deadline, 'player-0').position).toEqual(before);
+    expect(simulation.snapshot(deadline)).toMatchObject({ phase: 'TALLY', phaseEndsAtMs: null });
+    const result = simulation.tally();
+    expect(result).toMatchObject({
+      resultId: `ABC234:${deadline}`,
+      lootingStartedAtMs: 2_000,
+      lootingEndedAtMs: deadline,
+      durationMs: GAME.lootingDurationMs,
+      totalItems: 1,
+      categoryTotals: [{ category: 'produce', count: 1 }],
+      players: [
+        { playerId: 'player-0', totalItems: 1, isConnectedAtEnd: true },
+        { playerId: 'player-1', totalItems: 0, isConnectedAtEnd: false },
+      ],
+    });
+    expect(result?.players[0]?.items).toEqual([
+      { id: 'loot-apples', catalogId: 'apples', label: 'Apples', category: 'produce' },
+    ]);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result?.players)).toBe(true);
+
+    const duplicateEnd = simulation.tick(deadline + 1_000);
+    expect(duplicateEnd.tallyCommitted).toBe(false);
+    expect(simulation.tally()).toBe(result);
+  });
+
+  it('catches a delayed timer up directly to the same committed tally', () => {
+    const { simulation } = tallySimulation();
+    const deadline = 2_000 + GAME.lootingDurationMs;
+    const delayed = simulation.tick(deadline + 5_000);
+    expect(delayed).toMatchObject({ phaseChanged: true, tallyCommitted: true });
+    expect(simulation.snapshot(deadline + 5_000).phase).toBe('TALLY');
+    expect(simulation.tally()).toMatchObject({
+      lootingStartedAtMs: 2_000,
+      lootingEndedAtMs: deadline,
+      totalItems: 0,
+    });
+  });
+});

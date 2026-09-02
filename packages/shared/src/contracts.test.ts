@@ -4,6 +4,7 @@ import {
   canCarryItem,
   clientInputSchema,
   loginRequestSchema,
+  matchTallySchema,
   registerRequestSchema,
   gameSnapshotSchema,
   interactionRequestSchema,
@@ -116,6 +117,30 @@ describe('shared contracts', () => {
       carriedCount: 2,
       carriedItemIds: ['loot-milk'],
     })).toThrow();
+  });
+
+  it('validates a complete server-owned tally and rejects a non-69-second result', () => {
+    const tally = matchTallySchema.parse({
+      resultId: 'ABC234:70000',
+      roomCode: 'ABC234',
+      lootingStartedAtMs: 1_000,
+      lootingEndedAtMs: 70_000,
+      durationMs: GAME.lootingDurationMs,
+      totalItems: 1,
+      categoryTotals: [{ category: 'dairy', count: 1 }],
+      players: [{
+        playerId: 'player-1',
+        displayName: 'Player 1',
+        slot: 0,
+        isConnectedAtEnd: true,
+        totalItems: 1,
+        categoryTotals: [{ category: 'dairy', count: 1 }],
+        items: [{ id: 'loot-milk', catalogId: 'milk', label: 'Milk', category: 'dairy' }],
+      }],
+    });
+    expect(tally.players[0]?.items[0]?.label).toBe('Milk');
+    expect(() => matchTallySchema.parse({ ...tally, durationMs: 68_000 })).toThrow();
+    expect(() => matchTallySchema.parse({ ...tally, clientComputedWinner: 'player-1' })).toThrow();
   });
 
   it('enforces carry capacity and normalized movement', () => {

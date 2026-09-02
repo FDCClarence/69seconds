@@ -75,6 +75,11 @@ export interface LootAuthorityOptions {
   collision?: readonly CollisionRectangle[];
 }
 
+export interface DepositedLootItem {
+  id: string;
+  catalogId: string;
+}
+
 export const REJECTION_MESSAGES: Record<InteractionRejectionReason, string> = {
   INVALID_PAYLOAD: 'That interaction request was malformed',
   NOT_IN_MATCH: 'You are not part of an active match',
@@ -251,6 +256,16 @@ export class MatchLootAuthority {
 
   cartItemIds(cartId: CartId): readonly string[] {
     return [...(this.carts.get(cartId)?.itemIds ?? [])];
+  }
+
+  /** Read-only tally input. Deposits are attributed by the cart's stable room slot. */
+  depositedItemsForSlot(slot: number): readonly DepositedLootItem[] {
+    const cart = this.carts.get(assignedCartIdForSlot(slot));
+    if (!cart) return [];
+    return cart.itemIds.flatMap((itemId) => {
+      const item = this.items.get(itemId);
+      return item ? [{ id: item.id, catalogId: item.catalogId }] : [];
+    });
   }
 
   private reachableThroughGeometry(from: Vector2, to: Vector2): boolean {

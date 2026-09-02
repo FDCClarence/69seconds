@@ -1,9 +1,12 @@
-import type {
-  ClientToServerEvents,
-  GameSnapshot,
-  RoomCommandResult,
-  RoomPublicState,
-  ServerToClientEvents,
+import {
+  GAME,
+  type ClientToServerEvents,
+  type GameSnapshot,
+  type InteractionResult,
+  type MatchTally,
+  type RoomCommandResult,
+  type RoomPublicState,
+  type ServerToClientEvents,
 } from '@69-seconds/shared';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { io as createClient, type Socket as ClientSocket } from 'socket.io-client';
@@ -52,9 +55,11 @@ describe('authenticated Socket.IO room lifecycle', () => {
   let httpServer: HttpServer;
   let sockets: SocketServerHandle;
   let origin: string;
+  let serverNowMs: number;
   const clients: TestClient[] = [];
 
   beforeEach(async () => {
+    serverNowMs = 1_000;
     httpServer = createServer();
     const tokens = new Map(users.map((user, index) => [`token-${index + 1}`, user]));
     sockets = attachSocketServer(httpServer, {
@@ -63,7 +68,12 @@ describe('authenticated Socket.IO room lifecycle', () => {
       auth: {
         resolveSession: async (token) => tokens.get(token) ?? null,
       },
-      rooms: { reconnectGraceMs: 60, abandonedRoomTtlMs: 120 },
+      rooms: {
+        reconnectGraceMs: 60,
+        abandonedRoomTtlMs: 120,
+        countdownDurationMs: 10,
+        now: () => serverNowMs,
+      },
     });
     await new Promise<void>((resolve, reject) => {
       httpServer.once('error', reject);
@@ -201,5 +211,64 @@ describe('authenticated Socket.IO room lifecycle', () => {
     host.disconnect();
     await new Promise((resolve) => setTimeout(resolve, 90));
     expect(sockets.rooms.size).toBe(0);
+  });
+
+  it('broadcasts one exact tally, rejects delayed gameplay, and replays the result on reconnect', async () => {
+    const host = await connect(0);
+    const created = await command(host, 'room:create', {});
+    if (!created.ok || !created.room) throw new Error('Expected room creation success');
+    await command(host, 'lobby:ready', { ready: true });
+    await command(host, 'lobby:start', {});
+
+    const lootingState = nextLobbyState(host, (room) => room.phase === 'LOOTING');
+    serverNowMs = 1_010;
+    const looting = await lootingState;
+    const deadline = 1_010 + GAME.lootingDurationMs;
+    expect(looting.phaseEndsAtMs).toBe(deadline);
+
+    let tallyEvents = 0;
+    host.on('match:tally', () => { tallyEvents += 1; });
+    const tallyState = nextLobbyState(host, (room) => room.phase === 'TALLY');
+    const firstTally = new Promise<MatchTally>((resolve) => host.once('match:tally', resolve));
+    serverNowMs = deadline;
+    expect(await tallyState).toMatchObject({ phase: 'TALLY', phaseEndsAtMs: null });
+    const result = await firstTally;
+    expect(result).toMatchObject({
+      roomCode: created.room.code,
+      lootingStartedAtMs: 1_010,
+      lootingEndedAtMs: deadline,
+      durationMs: GAME.lootingDurationMs,
+      totalItems: 0,
+    });
+
+    const lateInteraction = await new Promise<InteractionResult>((resolve) => {
+      host.emit('interaction:request', {
+        requestId: '00000000-0000-4000-8000-000000000301',
+        action: 'INTERACT',
+      }, resolve);
+    });
+    expect(lateInteraction).toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(tallyEvents).toBe(1);
+
+    host.disconnect();
+    const refreshed: TestClient = createClient(origin, {
+      autoConnect: false,
+      transports: ['websocket'],
+      extraHeaders: { Cookie: '69s_session=token-1' },
+      forceNew: true,
+      reconnection: false,
+    });
+    clients.push(refreshed);
+    const replayed = new Promise<MatchTally>((resolve) => refreshed.once('match:tally', resolve));
+    const connected = new Promise<void>((resolve, reject) => {
+      refreshed.once('connect', resolve);
+      refreshed.once('connect_error', reject);
+    });
+    refreshed.connect();
+    await connected;
+    expect(await replayed).toEqual(result);
+    expect(await command(refreshed, 'lobby:start', {}))
+      .toMatchObject({ ok: false, error: { code: 'MATCH_ALREADY_STARTED' } });
   });
 });

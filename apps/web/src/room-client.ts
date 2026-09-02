@@ -2,6 +2,7 @@ import {
   roomClosedSchema,
   gameSnapshotSchema,
   interactionResultSchema,
+  matchTallySchema,
   lootSyncSchema,
   lootUpdateSchema,
   roomCommandResultSchema,
@@ -16,6 +17,7 @@ import {
   type InteractionResult,
   type LootSync,
   type LootUpdate,
+  type MatchTally,
   type MovementInput,
   type RoomClosed,
   type RoomPublicState,
@@ -35,6 +37,7 @@ export interface RoomClientListeners {
   onClosed(room: RoomClosed): void;
   onConnection(state: SocketConnectionState): void;
   onError(error: RoomClientError): void;
+  onResult?(result: MatchTally): void;
 }
 
 export interface RoomClient {
@@ -144,6 +147,14 @@ class SocketRoomClient implements RoomClient {
         return;
       }
       for (const listener of this.shoveLandedListeners) listener(parsed.data);
+    });
+    socket.on('match:tally', (payload) => {
+      const parsed = matchTallySchema.safeParse(payload);
+      if (!parsed.success) {
+        this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received an invalid match tally', retryable: true });
+        return;
+      }
+      for (const listener of this.listeners) listener.onResult?.(parsed.data);
     });
   }
 

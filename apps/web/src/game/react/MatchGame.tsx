@@ -31,7 +31,9 @@ export function MatchGame({
   const [inventory, setInventory] = useState<CarryHudState>({ carriedItems: [], depositedCount: 0, synchronized: false });
   const [sprint, setSprint] = useState<SprintHudState>(READY_SPRINT);
   const [displayPhase, setDisplayPhase] = useState(room.phase);
-  const [countdown, setCountdown] = useState<number | null>(null);
+  const [phaseEndsAtMs, setPhaseEndsAtMs] = useState(room.phaseEndsAtMs);
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
+  const serverClock = useRef({ serverTimeMs: room.serverTimeMs, receivedAtMs: Date.now() });
   const initialRoom = useRef(room);
   const actionTimer = useRef<number | undefined>(undefined);
 
@@ -40,18 +42,29 @@ export function MatchGame({
     window.clearTimeout(actionTimer.current);
     actionTimer.current = window.setTimeout(() => setFeedback(null), 1_200);
   }, []);
-  useEffect(() => setDisplayPhase(room.phase), [room.phase]);
   useEffect(() => {
-    if (displayPhase !== 'COUNTDOWN' || room.phaseEndsAtMs === null) {
-      setCountdown(null);
+    setDisplayPhase(room.phase);
+    setPhaseEndsAtMs(room.phaseEndsAtMs);
+    serverClock.current = { serverTimeMs: room.serverTimeMs, receivedAtMs: Date.now() };
+  }, [room.phase, room.phaseEndsAtMs, room.serverTimeMs]);
+  useEffect(() => roomClient.subscribeSnapshots?.((snapshot) => {
+    serverClock.current = { serverTimeMs: snapshot.serverTimeMs, receivedAtMs: Date.now() };
+    setDisplayPhase((current) => current === snapshot.phase ? current : snapshot.phase);
+    setPhaseEndsAtMs((current) => current === snapshot.phaseEndsAtMs ? current : snapshot.phaseEndsAtMs);
+  }), [roomClient]);
+  useEffect(() => {
+    if ((displayPhase !== 'COUNTDOWN' && displayPhase !== 'LOOTING') || phaseEndsAtMs === null) {
+      setRemainingSeconds(null);
       return undefined;
     }
-    const serverOffsetMs = room.serverTimeMs - Date.now();
-    const refresh = () => setCountdown(Math.max(0, Math.ceil((room.phaseEndsAtMs! - (Date.now() + serverOffsetMs)) / 1_000)));
+    const refresh = () => {
+      const estimatedServerNowMs = serverClock.current.serverTimeMs + (Date.now() - serverClock.current.receivedAtMs);
+      setRemainingSeconds(Math.max(0, Math.ceil((phaseEndsAtMs - estimatedServerNowMs) / 1_000)));
+    };
     refresh();
     const timer = window.setInterval(refresh, 100);
     return () => window.clearInterval(timer);
-  }, [displayPhase, room.phaseEndsAtMs, room.serverTimeMs]);
+  }, [displayPhase, phaseEndsAtMs]);
 
   useEffect(() => {
     const parent = gameHost.current;
@@ -109,7 +122,7 @@ export function MatchGame({
       <div className="game-hud-topline">
         <div><span className="hud-label">Room</span><strong>{room.code}</strong></div>
         <div className={`hud-status ${ready && inventory.synchronized ? 'is-ready' : ''}`}><i />{!ready ? 'Loading scene' : inventory.synchronized ? 'Loot synchronized' : 'Awaiting loot state'}</div>
-        <div><span className="hud-label">Server phase</span><strong>{displayPhase}</strong></div>
+        <div><span className="hud-label">Server phase</span><strong>{displayPhase}{displayPhase === 'LOOTING' && remainingSeconds !== null ? ` · ${formatMatchTime(remainingSeconds)}` : ''}</strong></div>
       </div>
       <div className="game-controls" aria-label="Controls">
         <span><kbd>WASD</kbd> move</span><span><kbd>Shift</kbd> sprint</span>
@@ -156,11 +169,16 @@ export function MatchGame({
       <button type="button" className="hud-leave" onClick={() => void onLeave()}>Leave test</button>
     </section>
     {displayPhase === 'COUNTDOWN' && <div className="countdown-overlay" role="timer" aria-label="Match countdown">
-      <span>Get ready</span><strong>{countdown ?? '…'}</strong>
+      <span>Get ready</span><strong>{remainingSeconds ?? '…'}</strong>
     </div>}
     <div className={`game-action-indicator ${feedback ? 'is-visible' : ''}`} role="status" aria-live="polite">
       {feedback?.message ?? ''}
     </div>
     <p className="focus-hint">Click the store to capture controls · focus is released when you tab away</p>
   </main>;
+}
+
+function formatMatchTime(totalSeconds: number): string {
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${minutes}:${String(totalSeconds % 60).padStart(2, '0')}`;
 }

@@ -1,8 +1,11 @@
 import {
   GAME,
+  LOOT_CATEGORIES,
   NETWORK,
   gameSnapshotSchema,
   initialSprintState,
+  lootCatalogEntry,
+  matchTallySchema,
   movementAxis,
   normalizeMovementVector,
   resolveSprint,
@@ -13,6 +16,7 @@ import {
   type InteractionRequest,
   type LootSync,
   type LootUpdate,
+  type MatchTally,
   type RoomPublicState,
   type ShoveRequest,
   type SprintState,
@@ -49,8 +53,15 @@ interface SimulatedPlayer {
   acknowledgedInputSequence: number;
 }
 
+interface MatchParticipant {
+  id: string;
+  displayName: string;
+  slot: number;
+}
+
 export interface SimulationTickResult {
   phaseChanged: boolean;
+  tallyCommitted: boolean;
   snapshotDue: boolean;
 }
 
@@ -58,10 +69,13 @@ export interface SimulationTickResult {
 export class AuthoritativeRoomSimulation {
   readonly roomCode: string;
   private readonly players = new Map<string, SimulatedPlayer>();
+  private readonly participants = new Map<string, MatchParticipant>();
   private readonly loot: MatchLootAuthority;
   private readonly shoves: MatchShoveAuthority;
   private phase: GamePhase;
   private phaseEndsAtMs: number | null;
+  private lootingStartedAtMs: number | null = null;
+  private committedTally: MatchTally | null = null;
   private snapshotSequence = 0;
   private snapshotAccumulatorSeconds = 0;
 
@@ -74,6 +88,11 @@ export class AuthoritativeRoomSimulation {
     this.phase = room.phase;
     this.phaseEndsAtMs = room.phaseEndsAtMs;
     for (const player of room.players) {
+      this.participants.set(player.id, {
+        id: player.id,
+        displayName: player.displayName,
+        slot: player.slot,
+      });
       this.players.set(player.id, {
         id: player.id,
         slot: player.slot,
@@ -93,9 +112,18 @@ export class AuthoritativeRoomSimulation {
     this.shoves = new MatchShoveAuthority(room.code, shoveOptions);
   }
 
-  submitInput(playerId: string, input: ClientInput): boolean {
+  submitInput(playerId: string, input: ClientInput, serverNowMs?: number): boolean {
     const player = this.players.get(playerId);
     if (!player || input.sequence <= player.lastReceivedSequence) return false;
+    // Countdown input may be staged, but nothing at or beyond the looting deadline
+    // is accepted into the queue even if the fixed-step timer has not fired yet.
+    if (this.phase === 'TALLY') return false;
+    if (
+      serverNowMs !== undefined
+      && this.phase === 'LOOTING'
+      && this.phaseEndsAtMs !== null
+      && serverNowMs >= this.phaseEndsAtMs
+    ) return false;
     player.lastReceivedSequence = input.sequence;
     // Socket.IO preserves order. The cap bounds malicious backlog without increasing movement per tick.
     if (player.queuedInputs.length >= NETWORK.maxInputRateHz) player.queuedInputs.shift();
@@ -196,12 +224,31 @@ export class AuthoritativeRoomSimulation {
     return this.loot.syncFor(playerId);
   }
 
+  tally(): MatchTally | null {
+    return this.committedTally;
+  }
+
   tick(serverNowMs: number): SimulationTickResult {
     let phaseChanged = false;
+    let tallyCommitted = false;
     if (this.phase === 'COUNTDOWN' && this.phaseEndsAtMs !== null && serverNowMs >= this.phaseEndsAtMs) {
+      const lootingStartedAtMs = this.phaseEndsAtMs;
       this.phase = 'LOOTING';
-      this.phaseEndsAtMs = serverNowMs + GAME.lootingDurationMs;
+      this.lootingStartedAtMs = lootingStartedAtMs;
+      this.phaseEndsAtMs = lootingStartedAtMs + GAME.lootingDurationMs;
       phaseChanged = true;
+    }
+
+    // This follows the countdown transition deliberately: a delayed timer can
+    // catch up through both boundaries in one synchronous tick without opening
+    // a late interaction window or emitting an intermediate stale phase.
+    if (this.phase === 'LOOTING' && this.phaseEndsAtMs !== null && serverNowMs >= this.phaseEndsAtMs) {
+      const lootingEndedAtMs = this.phaseEndsAtMs;
+      this.phase = 'TALLY';
+      this.phaseEndsAtMs = null;
+      this.committedTally = this.createTally(lootingEndedAtMs);
+      phaseChanged = true;
+      tallyCommitted = true;
     }
 
     const movementAllowed = this.phase === 'LOOTING'
@@ -246,9 +293,12 @@ export class AuthoritativeRoomSimulation {
 
     this.snapshotAccumulatorSeconds += FIXED_DELTA_SECONDS;
     const snapshotInterval = 1 / NETWORK.snapshotRateHz;
-    const snapshotDue = this.snapshotAccumulatorSeconds + Number.EPSILON >= snapshotInterval;
+    // One final snapshot is emitted because `phaseChanged` is true. Afterwards a
+    // completed room is event-driven and does not keep broadcasting 20 Hz state.
+    const snapshotDue = this.phase !== 'TALLY'
+      && this.snapshotAccumulatorSeconds + Number.EPSILON >= snapshotInterval;
     if (snapshotDue) this.snapshotAccumulatorSeconds -= snapshotInterval;
-    return { phaseChanged, snapshotDue };
+    return { phaseChanged, tallyCommitted, snapshotDue };
   }
 
   snapshot(serverNowMs: number): GameSnapshot {
@@ -279,4 +329,60 @@ export class AuthoritativeRoomSimulation {
       sprint: false,
     };
   }
+
+  private createTally(lootingEndedAtMs: number): MatchTally {
+    if (this.committedTally) return this.committedTally;
+    const lootingStartedAtMs = this.lootingStartedAtMs ?? lootingEndedAtMs - GAME.lootingDurationMs;
+    const players = [...this.participants.values()]
+      .sort((left, right) => left.slot - right.slot)
+      .map((participant) => {
+        const items = this.loot.depositedItemsForSlot(participant.slot).map((item) => {
+          const catalog = lootCatalogEntry(item.catalogId);
+          return { id: item.id, catalogId: item.catalogId, label: catalog.label, category: catalog.category };
+        });
+        return {
+          playerId: participant.id,
+          displayName: participant.displayName,
+          slot: participant.slot,
+          isConnectedAtEnd: this.players.get(participant.id)?.connected ?? false,
+          items,
+          categoryTotals: LOOT_CATEGORIES.map((category) => ({
+            category,
+            count: items.filter((item) => item.category === category).length,
+          })).filter((total) => total.count > 0),
+          totalItems: items.length,
+        };
+      });
+    const parsed = matchTallySchema.parse({
+      resultId: `${this.roomCode}:${lootingEndedAtMs}`,
+      roomCode: this.roomCode,
+      lootingStartedAtMs,
+      lootingEndedAtMs,
+      durationMs: GAME.lootingDurationMs,
+      players,
+      categoryTotals: LOOT_CATEGORIES.map((category) => ({
+        category,
+        count: players.reduce(
+          (count, player) => count + player.items.filter((item) => item.category === category).length,
+          0,
+        ),
+      })).filter((total) => total.count > 0),
+      totalItems: players.reduce((count, player) => count + player.totalItems, 0),
+    });
+    return deepFreezeTally(parsed);
+  }
+}
+
+function deepFreezeTally(result: MatchTally): MatchTally {
+  for (const player of result.players) {
+    for (const item of player.items) Object.freeze(item);
+    for (const total of player.categoryTotals) Object.freeze(total);
+    Object.freeze(player.items);
+    Object.freeze(player.categoryTotals);
+    Object.freeze(player);
+  }
+  for (const total of result.categoryTotals) Object.freeze(total);
+  Object.freeze(result.players);
+  Object.freeze(result.categoryTotals);
+  return Object.freeze(result);
 }

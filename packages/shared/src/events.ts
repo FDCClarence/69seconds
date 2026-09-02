@@ -12,6 +12,7 @@ import type {
   RoomLeaveRequest,
   LootSync,
   LootUpdate,
+  MatchTally,
   RoomPublicState,
   ServerError,
   ShoveRequest,
@@ -37,6 +38,7 @@ export const SERVER_EVENTS = {
   LOOT_SYNC: 'loot:sync',
   LOOT_UPDATE: 'loot:update',
   SHOVE_LANDED: 'shove:landed',
+  MATCH_TALLY: 'match:tally',
   ERROR: 'game:error',
 } as const;
 
@@ -61,6 +63,8 @@ export interface ServerToClientEvents {
   'loot:update': (update: LootUpdate) => void;
   /** Broadcast to the room: one committed shove, with the target's authoritative landing spot. */
   'shove:landed': (event: ShoveLanded) => void;
+  /** Broadcast once at the deadline and replayed to a reconnecting room member. */
+  'match:tally': (result: MatchTally) => void;
   'game:error': (error: ServerError) => void;
 }
 

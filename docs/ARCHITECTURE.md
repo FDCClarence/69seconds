@@ -53,7 +53,7 @@ The committed migrations create normalized, uniquely indexed users and expiring 
 4. During gameplay the client emits intent events: `input:update`, `interaction:request`, and `shove:request`.
 5. The transport parses each payload with its shared Zod schema, applies rate/size controls, and passes validated intent to the room simulation.
 6. The authoritative tick validates phase, movement limits, collision, proximity, inventory, loot availability, cart ownership, sprint, and shoves.
-7. The server emits increasing-sequence `state:snapshot` messages, per-socket `loot:sync` state, and room-wide `loot:update` and `shove:landed` changes. `interaction:request` and `shove:request` are each answered by a typed acknowledgement; a malformed payload also produces `game:error` with a stable code.
+7. The server emits increasing-sequence `state:snapshot` messages, per-socket `loot:sync` state, room-wide `loot:update` and `shove:landed` changes, and one immutable `match:tally` result at completion. `interaction:request` and `shove:request` are each answered by a typed acknowledgement; a malformed payload also produces `game:error` with a stable code.
 8. The browser runtime-validates snapshots/syncs/updates/errors, ignores stale sequences, reconciles local presentation, and never mutates canonical server state.
 
 The room handlers return typed acknowledgement unions while broadcasting runtime-validated `lobby:state` snapshots. Movement input, loot interactions, and shoves all now enter the authoritative room simulation; no gameplay handler remains validation-only.
@@ -66,7 +66,7 @@ The room handlers return typed acknowledgement unions while broadcasting runtime
 - The server broadcasts compact movement snapshots at 20 Hz. A snapshot contains room code, snapshot sequence, server phase/deadline, and each player's position, effective sprint state, remaining stamina, exhaustion latch, recovery deadline, and last processed input sequence. Lobby membership, loot, and inventories are not repeated in this high-frequency message.
 - The local Phaser player advances immediately on the same 30 Hz fixed step. On a snapshot it resets to the authoritative position, drops inputs through the acknowledged sequence, and replays only remaining inputs.
 - Remote players retain timestamped snapshots and render 100 ms behind estimated server time, interpolating between samples. Stale snapshots and stale interpolation samples are ignored.
-- Starting assigns four separated, collision-safe positions and synchronizes `COUNTDOWN` through lobby state plus an initial movement snapshot. The server advances to `LOOTING` at the countdown deadline and broadcasts the phase change; movement and local action hooks are gated until then.
+- Starting assigns four separated, collision-safe positions and synchronizes `COUNTDOWN` through lobby state plus an initial movement snapshot. The server advances to `LOOTING` at the scheduled countdown boundary, sets its end to that boundary plus 69,000 ms, and broadcasts the phase change; movement and local action hooks are gated until then. At the looting deadline it emits one final `TALLY` snapshot and stops the 20 Hz stream for that completed room.
 - Disconnect and reconnect clear held server input and reset per-connection input sequencing, preventing stuck movement. Authoritative position and stable room slot remain in the existing room grace lifecycle.
 
 ## Authoritative loot networking
@@ -82,6 +82,13 @@ The room handlers return typed acknowledgement unions while broadcasting runtime
 - Loot never travels in the 20 Hz movement snapshot. Availability changes are events, not periodic state, so the high-frequency message stays compact.
 - The client predicts a pickup only: the marker hides and a dashed carry slot appears immediately, and both are restored if the server refuses or never answers. Deposits wait for confirmation, because reversing four slots reads worse than a brief pause.
 - Removing a player restocks whatever they were still holding and clears their cart ownership, while their deposited items stay in the cart so the tally keeps crediting completed work.
+
+## Atomic tally result
+
+- The simulation checks the wall-clock deadline before applying movement. Loot and shove authorities independently reject requests whose server receive time is at or beyond the same deadline, so a delayed timer callback cannot create a late action window.
+- On the first tick at or beyond the deadline, the simulation synchronously changes `LOOTING → TALLY`, clears the phase deadline, and reads cart contents from `MatchLootAuthority`. The resulting `MatchTally` is parsed through the shared strict schema and frozen in memory; later ticks return the same object and cannot emit a duplicate completion.
+- Stable cart slots attribute deposits to the original match participants, including somebody disconnected or removed near the end. The result records whether each participant was connected at the buzzer, item labels/categories, per-player totals, and aggregate category totals. Carried items do not count.
+- `match:tally` is broadcast once after the authoritative `TALLY` room state. Reconnecting members receive the already committed result verbatim. The result is match-scoped and process-local; no durable history table is introduced.
 
 ## Authoritative sprint and shove
 
@@ -102,12 +109,12 @@ The room handlers return typed acknowledgement unions while broadcasting runtime
 - Codes contain six cryptographically selected characters from an ambiguity-free alphabet. Allocation checks the active registry and retries collisions.
 - One user maps to at most one room and one roster entry, while that entry may own multiple socket IDs during a refresh overlap or multiple tabs.
 - Losing the last socket marks the player `RECONNECTING` for 15 seconds. The same authenticated user reattaches to the existing member. Once grace expires, the member is removed and the lowest remaining slot becomes host; an empty room closes.
-- The host may start only from `LOBBY` when every rostered player (host included) is both connected and ready. Start changes the authoritative phase to `COUNTDOWN`, sets the three-second phase deadline, and locks out new joins. The later gameplay-networking milestone owns advancing and simulating subsequent phases.
+- The host may start only from `LOBBY` when every rostered player (host included) is both connected and ready. Start changes the authoritative phase to `COUNTDOWN`, sets the three-second phase deadline, and locks out new joins. `COUNTDOWN → LOOTING → TALLY` is one-way; a completed result has no restart mutation path.
 - A periodic TTL sweep is a defensive backstop for wholly disconnected rooms, while per-player timers normally close them sooner. Registry shutdown clears timers so test/process teardown cannot mutate disposed state.
 
 ## Server authority and time
 
-The match service owns the transition graph and an absolute `phaseEndsAtMs`. On each authoritative update—and before applying queued actions—it checks the deadline. `LOOTING` lasts 69,000 ms by the server timeline. Network latency can change when a client sees an update, never the recorded deadline or accepted result.
+The match service owns the transition graph and an absolute `phaseEndsAtMs`. On each authoritative update—and before applying queued actions—it checks the deadline. `LOOTING` lasts exactly 69,000 ms from the scheduled countdown boundary by the server timeline. Network latency can change when a client sees an update, never the recorded deadline or accepted result. Clients extrapolate display time from the latest validated `serverTimeMs`/`phaseEndsAtMs` pair and never transition the match themselves.
 
 Client input sequence numbers support deduplication/order checks but do not prove time. Request IDs correlate interaction errors and make later idempotency possible. Snapshot sequence numbers allow clients to discard stale state.
 
@@ -131,7 +138,7 @@ The match route creates one game instance after its host element mounts and dest
 
 The Socket.IO client should live outside Phaser scenes (in a match controller/service) so reconnects survive scene replacement and can be tested independently. Domain calculations that do not require Phaser types move into `packages/shared`. Phaser-specific collision/vector/scene logic stays in `apps/web`.
 
-React owns LOBBY and the countdown overlay while mounting Phaser behind `COUNTDOWN`. Phaser receives snapshots through the room client rather than owning the socket. At TALLY, the controller will disable Phaser input immediately on authoritative phase change while React presents the result overlay; route teardown still performs final destruction.
+React owns LOBBY and the countdown overlay while mounting Phaser behind `COUNTDOWN`. Phaser receives snapshots through the room client rather than owning the socket. On authoritative `TALLY` room state, React replaces the match component, whose cleanup destroys the Phaser instance, canvas, scene subscriptions, and keyboard listeners. The tally route waits for and runtime-validates `match:tally`, then renders only that server result and offers a room-leave action back to home.
 
 ## Testing strategy
 

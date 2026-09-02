@@ -11,21 +11,25 @@ export interface LootCatalogEntry {
   label: string;
   shortLabel: string;
   color: number;
+  category: LootCategory;
 }
 
+export const LOOT_CATEGORIES = ['produce', 'bakery', 'dairy', 'pantry', 'drinks', 'household'] as const;
+export type LootCategory = (typeof LOOT_CATEGORIES)[number];
+
 export const LOOT_CATALOG = [
-  { id: 'apples', label: 'Apples', shortLabel: 'APL', color: 0xe85f50 },
-  { id: 'bread', label: 'Bread', shortLabel: 'BRD', color: 0xeebd62 },
-  { id: 'milk', label: 'Milk', shortLabel: 'MLK', color: 0x83c6dc },
-  { id: 'beans', label: 'Beans', shortLabel: 'BNS', color: 0x8ea96c },
-  { id: 'pasta', label: 'Pasta', shortLabel: 'PST', color: 0xe69446 },
-  { id: 'tea', label: 'Tea', shortLabel: 'TEA', color: 0x6d966b },
-  { id: 'soap', label: 'Soap', shortLabel: 'SOP', color: 0x937cbd },
-  { id: 'rice', label: 'Rice', shortLabel: 'RIC', color: 0xd8d2bd },
-  { id: 'eggs', label: 'Eggs', shortLabel: 'EGG', color: 0xf4e7a4 },
-  { id: 'juice', label: 'Juice', shortLabel: 'JCE', color: 0xf08d45 },
-  { id: 'coffee', label: 'Coffee', shortLabel: 'COF', color: 0x93684e },
-  { id: 'tomatoes', label: 'Tomatoes', shortLabel: 'TOM', color: 0xd95548 },
+  { id: 'apples', label: 'Apples', shortLabel: 'APL', color: 0xe85f50, category: 'produce' },
+  { id: 'bread', label: 'Bread', shortLabel: 'BRD', color: 0xeebd62, category: 'bakery' },
+  { id: 'milk', label: 'Milk', shortLabel: 'MLK', color: 0x83c6dc, category: 'dairy' },
+  { id: 'beans', label: 'Beans', shortLabel: 'BNS', color: 0x8ea96c, category: 'pantry' },
+  { id: 'pasta', label: 'Pasta', shortLabel: 'PST', color: 0xe69446, category: 'pantry' },
+  { id: 'tea', label: 'Tea', shortLabel: 'TEA', color: 0x6d966b, category: 'drinks' },
+  { id: 'soap', label: 'Soap', shortLabel: 'SOP', color: 0x937cbd, category: 'household' },
+  { id: 'rice', label: 'Rice', shortLabel: 'RIC', color: 0xd8d2bd, category: 'pantry' },
+  { id: 'eggs', label: 'Eggs', shortLabel: 'EGG', color: 0xf4e7a4, category: 'dairy' },
+  { id: 'juice', label: 'Juice', shortLabel: 'JCE', color: 0xf08d45, category: 'drinks' },
+  { id: 'coffee', label: 'Coffee', shortLabel: 'COF', color: 0x93684e, category: 'drinks' },
+  { id: 'tomatoes', label: 'Tomatoes', shortLabel: 'TOM', color: 0xd95548, category: 'produce' },
 ] as const satisfies readonly LootCatalogEntry[];
 
 export type LootCatalogId = (typeof LOOT_CATALOG)[number]['id'];
