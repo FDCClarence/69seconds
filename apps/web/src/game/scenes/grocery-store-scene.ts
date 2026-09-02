@@ -13,10 +13,12 @@ import {
   simulatePlayerMovement,
   type ClientInput,
   type GamePhase,
+  type GameSnapshot,
 } from '@69-seconds/shared';
 import { PlayerEntity } from '../entities/player-entity.js';
 import { GameInput } from '../input/game-input.js';
 import { RemoteInterpolationBuffer } from '../network/interpolation.js';
+import { reconcilePredictedPosition } from '../network/prediction.js';
 import {
   GENERATED_GROCERY_STORE_MAP,
   STORE_OBJECT_LAYER,
@@ -45,6 +47,7 @@ export class GroceryStoreScene extends Phaser.Scene {
   private phase: GamePhase;
   private fixedAccumulatorMs = 0;
   private lastSnapshotSequence = -1;
+  private lastAcknowledgedInputSequence = -1;
   private serverClockOffsetMs = 0;
   private unsubscribeSnapshots: (() => void) | undefined;
 
@@ -104,7 +107,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     while (this.fixedAccumulatorMs >= fixedStepMs) {
       this.fixedAccumulatorMs -= fixedStepMs;
       const input = this.callbacks.sendInput?.(frame.movement, frame.sprinting) ?? null;
-      if (input) {
+      if (input && this.phase === 'LOOTING') {
         this.pendingInputs.push(input);
         if (this.pendingInputs.length > NETWORK.maxInputRateHz * 4) this.pendingInputs.shift();
       }
@@ -129,7 +132,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     this.updateInteractionPrompt();
   }
 
-  private applySnapshot(snapshot: import('@69-seconds/shared').GameSnapshot): void {
+  private applySnapshot(snapshot: GameSnapshot): void {
     if (!this.player || snapshot.sequence <= this.lastSnapshotSequence) return;
     this.lastSnapshotSequence = snapshot.sequence;
     this.serverClockOffsetMs = snapshot.serverTimeMs - Date.now();
@@ -139,21 +142,18 @@ export class GroceryStoreScene extends Phaser.Scene {
     }
     const local = snapshot.players.find((player) => player.id === this.callbacks.localPlayerId);
     if (local) {
-      this.pendingInputs = this.pendingInputs.filter(
-        (input) => input.sequence > local.acknowledgedInputSequence,
-      );
-      let reconciled = { ...local.position };
-      if (snapshot.phase === 'LOOTING') {
-        for (const input of this.pendingInputs) {
-          reconciled = simulatePlayerMovement(
-            reconciled,
-            input.movement,
-            input.sprint,
-            1 / NETWORK.simulationTickRateHz,
-          );
-        }
+      if (local.acknowledgedInputSequence === -1 && this.lastAcknowledgedInputSequence >= 0) {
+        this.pendingInputs = [];
       }
-      this.player.setPosition(reconciled.x, reconciled.y);
+      this.lastAcknowledgedInputSequence = local.acknowledgedInputSequence;
+      const reconciliation = reconcilePredictedPosition(
+        local.position,
+        this.pendingInputs,
+        local.acknowledgedInputSequence,
+        snapshot.phase,
+      );
+      this.pendingInputs = reconciliation.pendingInputs;
+      this.player.setPosition(reconciliation.position.x, reconciliation.position.y);
     }
     for (const remote of snapshot.players) {
       if (remote.id === this.callbacks.localPlayerId) continue;

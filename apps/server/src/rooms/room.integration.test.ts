@@ -1,5 +1,6 @@
 import type {
   ClientToServerEvents,
+  GameSnapshot,
   RoomCommandResult,
   RoomPublicState,
   ServerToClientEvents,
@@ -146,8 +147,12 @@ describe('authenticated Socket.IO room lifecycle', () => {
       const ready = await command(member, 'lobby:ready', { ready: true });
       expect(ready.ok).toBe(true);
     }
+    const initialSnapshot = new Promise<GameSnapshot>((resolve) => host.once('state:snapshot', resolve));
     const started = await command(host, 'lobby:start', {});
     expect(started).toMatchObject({ ok: true, room: { phase: 'COUNTDOWN' } });
+    const synchronized = await initialSnapshot;
+    expect(synchronized).toMatchObject({ roomCode: code, phase: 'COUNTDOWN' });
+    expect(new Set(synchronized.players.map((player) => `${player.position.x}:${player.position.y}`)).size).toBe(4);
     const lateJoin = await command(fifth, 'room:join', { code });
     expect(lateJoin).toMatchObject({ ok: false, error: { code: 'MATCH_ALREADY_STARTED' } });
   });

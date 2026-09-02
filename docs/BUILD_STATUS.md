@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Step 6 complete: local-only grocery-store looting, inventory, and assigned-cart loop mounted in the Phaser match route.
+Step 7 complete: authoritative one-to-four-player movement, countdown synchronization, local prediction/reconciliation, and remote interpolation.
 
 ## Implemented
 
@@ -38,8 +38,17 @@ Step 6 complete: local-only grocery-store looting, inventory, and assigned-cart 
 - In-world prompts describe the closest item/cart context, including hands-full and wrong-cart states. Phaser publishes compact carry-slot and feedback events through the typed React bridge; React renders item-labelled carry slots, deposited count, and accessible feedback without rerendering the scene each frame.
 - `R` performs a local debug reset: it restores every spawned item, clears local carry/deposit state, and updates the HUD. Ctrl remains the existing shove debug hook.
 - Movement tests cover idle/opposing input, diagonal normalization, equal cardinal/diagonal walk magnitude, and sprint magnitude. Lifecycle tests cover idempotent game destruction, canvas removal, and teardown when leaving the React match route.
+- Active matches now run a server-owned 30 Hz fixed-step simulation and emit compact movement snapshots at 20 Hz rather than at render frequency.
+- The client sends strict, sequenced WASD/sprint input state at a maximum 30 Hz; it never sends a trusted position or velocity. The server ignores stale/duplicate sequences, bounds queued input, and derives all displacement from shared walk/sprint constants.
+- The shared package now owns the 1,800 × 1,200 bounds, shelf collision rectangles, player-radius validity checks, axis-separated sliding integration, and four slot-indexed safe spawn positions. Server authority and Phaser prediction consume the same representation.
+- Starting a ready lobby assigns separated spawns, broadcasts `COUNTDOWN`, and emits an initial compact snapshot. The server advances to `LOOTING` at the countdown deadline and broadcasts that phase change; movement and local action hooks are gated until then.
+- The local Phaser player predicts immediately on the same 30 Hz step. Each snapshot resets it to the authoritative position, removes inputs through the acknowledged sequence, and replays only unacknowledged inputs.
+- Remote players use timestamped per-player buffers, rendering 100 ms behind estimated server time and interpolating between snapshots while rejecting stale samples.
+- The existing React-owned Socket.IO client remains outside Phaser. Its narrow bridge samples inputs and supplies runtime-validated snapshots without causing React to render per frame.
+- Disconnect/reconnect clears held server input and resets connection-local sequencing while preserving the existing 15-second authoritative room slot and position.
+- A synchronized React countdown overlay now appears while Phaser preloads. High-frequency movement snapshots contain only phase/time and public movement state; they do not repeat lobby, loot, inventory, or cart state.
 
-## Prototype tuning
+## Networking and prototype tuning
 
 - Walk speed: 150 pixels/second.
 - Sprint speed: 235 pixels/second (1.57× walk speed).
@@ -52,6 +61,10 @@ Step 6 complete: local-only grocery-store looting, inventory, and assigned-cart 
 - Loot interaction radius: 64 pixels; cart interaction radius: 92 pixels.
 - Local catalog/spawn count: 12 original placeholder items; carry limit: 4.
 - Debug reset: `R`, local-only.
+- Server simulation: 30 Hz fixed step (33.33 ms).
+- Client input sampling/prediction: maximum 30 Hz fixed step.
+- Server movement snapshots: 20 Hz (50 ms average cadence).
+- Remote interpolation delay: 100 ms.
 
 ## Verification
 
@@ -59,21 +72,24 @@ Completed on 2026-09-02 with Node.js 22.6.0, npm 10.8.2, Phaser 4.2.1, and Vites
 
 - `npm run lint` — passed with no errors or warnings.
 - `npm run typecheck` — passed in all three workspaces.
-- `npm test` — passed 35 tests: 13 shared, 6 server, and 16 web. The test command was rerun with permission to bind an ephemeral localhost port; all four existing Socket.IO lifecycle tests passed. The 7 MySQL auth integration cases remain skipped because `TEST_DATABASE_URL` was not supplied.
-- New tests cover pure pickup/full-hands/deposit/invalid-cart/no-target rules, all 12 generated loot routes plus all four cart routes from the central spawn, and typed Phaser-to-React carry/feedback bridge rendering.
-- `npm run build` — passed for shared, server, and web. Vite produced the production bundle; the two existing non-failing Zod annotation-position warnings and its advisory lazy-Phaser chunk-size warning remain.
+- `npm test` — passed 43 tests: 13 shared, 12 server, and 18 web. The command ran with permission to bind an ephemeral localhost port; all four Socket.IO integration tests passed. The 7 MySQL auth integration cases remain skipped because `TEST_DATABASE_URL` was not supplied.
+- New deterministic coverage validates strict no-position input payloads, ordered/stale sequences, countdown gating, walk/sprint displacement caps, shelf and boundary collision, safe input reset, exact tick/snapshot cadence, distinct four-player movement/spawns, initial Socket.IO countdown snapshot synchronization, acknowledged-input replay, and buffered remote interpolation.
+- `npm run build` — passed for shared, server, and web. Vite produced the production bundle; the two existing non-failing Zod annotation-position notices and its advisory lazy-Phaser chunk-size warning remain.
 - `git diff --check` — passed.
 
 ## Known limitations
 
 - Active rooms are intentionally process-local and disappear on server restart. Production must use one application replica until a shared room store and Socket.IO adapter are designed; Redis remains deferred.
-- Starting currently hands the room to `COUNTDOWN` and records its deadline, but no authoritative simulation advances it to `LOOTING` yet. The local prototype intentionally permits movement and local loot interaction in the mounted match view so game feel can be tuned before phase-gated authoritative simulation exists.
-- The generated grocery store, player, shelves, carts, and item markers are original placeholders rather than a Tiled JSON/tileset. The local inventory is intentionally non-authoritative: it has no shared availability, multiplayer input/snapshots, prediction, reconciliation, interpolation, or tally behavior. Step 8 must replace its local command resolver with atomic server decisions.
+- Loot availability, carried inventory, and cart deposits remain the local prototype. They are intentionally absent from movement snapshots; Step 8 must replace the resolver with atomic server decisions using authoritative positions for distance checks.
+- Sprint currently means the shared higher speed while Shift is held; a stamina/resource tradeoff remains the Step 9 design decision. Shove remains a phase-gated local debug hook.
+- The simulation records the authoritative 69-second looting deadline and stops movement at it, but the complete atomic `LOOTING → TALLY` result flow remains Step 10.
+- The generated grocery store, player, shelves, carts, and item markers remain original placeholders rather than Tiled/sprite assets. Collision is nevertheless server-authoritative.
 - Player display labels are the account username; profiles carry no separate display name or avatar yet, so the account menu shows a letter tile built from the username.
 - Browser-level multi-context Playwright coverage is still deferred; the current multiplayer lifecycle coverage uses real Socket.IO server/client connections at the server integration layer.
+- Browser network shaping is not configured, so artificial latency/jitter behavior is covered by deterministic sequence, prediction, and interpolation tests rather than an automated manual browser run.
 - The MySQL auth integration suite still requires an explicitly named test database through `TEST_DATABASE_URL`. The non-database root suite deliberately skips those 7 cases.
 - The full development dependency tree retains the previously documented four moderate Drizzle Kit/esbuild audit findings; shipped runtime dependencies were previously verified clean.
 
 ## Recommended next step
 
-Proceed exactly to Step 7 in `CODEX_BUILD_PROMPTS.md`: make movement authoritative for one to four players with a server-readable collision representation, sequenced input, local prediction, reconciliation, interpolation, and reconnect-safe synchronization. Preserve the map's collision/object data as an input to that authority work; do not network the local loot resolver until Step 8.
+Proceed exactly to Step 8 in `CODEX_BUILD_PROMPTS.md`: make loot availability, carried inventory, and assigned-cart deposits authoritative with atomic, idempotent server acknowledgements. Reuse authoritative player positions for interaction-distance validation and keep loot/inventory events separate from compact movement snapshots.

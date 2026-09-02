@@ -127,4 +127,13 @@ describe('authoritative movement simulation', () => {
     });
     expect(simulation.submitInput('player-0', input(0))).toBe(true);
   });
+
+  it('schedules twenty compact snapshots per thirty fixed simulation ticks', () => {
+    const simulation = new AuthoritativeRoomSimulation(room());
+    let snapshots = 0;
+    for (let tick = 0; tick < NETWORK.simulationTickRateHz; tick += 1) {
+      if (simulation.tick(1_000 + tick).snapshotDue) snapshots += 1;
+    }
+    expect(snapshots).toBe(NETWORK.snapshotRateHz);
+  });
 });

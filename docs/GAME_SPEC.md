@@ -4,7 +4,7 @@
 
 69 Seconds is a private-room browser game for one to four players. A match covers one grocery-store looting round: players leave a shared central spawn, collect shared items, carry at most four at once, deposit them in their assigned carts, and see a tally after exactly 69 server-timed seconds. Later resource-management phases are not part of this version.
 
-This document defines the intended first playable. Authentication and the private-room lobby lifecycle are implemented; Phaser gameplay and authoritative match simulation remain later milestones.
+This document defines the intended first playable. Authentication, the private-room lobby lifecycle, Phaser movement, and authoritative multiplayer movement are implemented; authoritative loot and later match mechanics remain later milestones.
 
 ## Match lifecycle
 
@@ -85,6 +85,6 @@ Exact item values, spawn table, interaction radius, sprint resource constraints,
 - Non-host start attempts receive `FORBIDDEN`; a host start before the readiness rule is met receives `PLAYERS_NOT_READY`.
 - Lobby-only changes after start receive `INVALID_PHASE` or `MATCH_ALREADY_STARTED` as appropriate.
 
-## Explicitly out of scope after the room milestone
+## Current implementation boundary
 
-Phaser scenes, map/assets, simulation ticks, loot resolution, scoring, and durable room recovery are not implemented yet. MySQL/Drizzle stores accounts and sessions, but rooms remain intentionally in one process and are lost on server restart. Tiled JSON, Phaser 4, and Playwright remain architectural targets for later steps.
+The 30 Hz server simulation now owns movement, sprint speed selection, bounds, shelf collision, spawn assignment, and the `COUNTDOWN → LOOTING` transition. Clients predict local movement and reconcile by acknowledged input sequence; remote movement is buffered and interpolated from 20 Hz compact snapshots. Loot resolution, scoring, shove effects, the complete timer/tally flow, durable room recovery, Tiled JSON, and Playwright browser coverage remain out of scope for this milestone. MySQL/Drizzle stores accounts and sessions, while rooms and matches remain intentionally process-local.

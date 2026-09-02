@@ -56,7 +56,18 @@ The committed migrations create normalized, uniquely indexed users and expiring 
 7. The server emits increasing-sequence `state:snapshot` messages. Rejected intent produces `game:error` with a stable code and optional request correlation.
 8. The browser runtime-validates snapshots/errors, ignores stale sequences, reconciles local presentation, and never mutates canonical server state.
 
-The room handlers are implemented and return typed acknowledgement unions while broadcasting runtime-validated `lobby:state` snapshots. Gameplay input handlers still only prove typing/validation: a malformed gameplay payload receives `INVALID_PAYLOAD`; a valid payload currently has no simulation effect.
+The room handlers return typed acknowledgement unions while broadcasting runtime-validated `lobby:state` snapshots. Movement input now enters the authoritative room simulation; interaction and shove handlers remain validation-only until their focused milestones.
+
+## Authoritative movement networking
+
+- Every active match runs a deterministic 30 Hz fixed-step simulation. Movement distance is derived only from shared walk/sprint speeds, normalized directional booleans, and the fixed step; client timestamps do not advance the simulation.
+- The browser sends strict, sequenced input state at no more than 30 Hz. The payload contains WASD booleans and a sprint boolean, never a position or velocity claim. Stale/duplicate sequences are ignored and input backlog is bounded.
+- `packages/shared` owns the 1,800 × 1,200 bounds, four slot-indexed spawn points, shelf rectangles, circle-vs-rectangle validity rule, and axis-separated movement integration. Both the server and local predictor consume that representation; Phaser collision is presentation support rather than authority.
+- The server broadcasts compact movement snapshots at 20 Hz. A snapshot contains room code, snapshot sequence, server phase/deadline, and each player's position, sprint presentation state, and last processed input sequence. Lobby membership, loot, and inventories are not repeated in this high-frequency message.
+- The local Phaser player advances immediately on the same 30 Hz fixed step. On a snapshot it resets to the authoritative position, drops inputs through the acknowledged sequence, and replays only remaining inputs.
+- Remote players retain timestamped snapshots and render 100 ms behind estimated server time, interpolating between samples. Stale snapshots and stale interpolation samples are ignored.
+- Starting assigns four separated, collision-safe positions and synchronizes `COUNTDOWN` through lobby state plus an initial movement snapshot. The server advances to `LOOTING` at the countdown deadline and broadcasts the phase change; movement and local action hooks are gated until then.
+- Disconnect and reconnect clear held server input and reset per-connection input sequencing, preventing stuck movement. Authoritative position and stable room slot remain in the existing room grace lifecycle.
 
 ## In-memory room lifecycle
 
@@ -93,7 +104,7 @@ The match route creates one game instance after its host element mounts and dest
 
 The Socket.IO client should live outside Phaser scenes (in a match controller/service) so reconnects survive scene replacement and can be tested independently. Domain calculations that do not require Phaser types move into `packages/shared`. Phaser-specific collision/vector/scene logic stays in `apps/web`.
 
-Initially, React owns LOBBY and COUNTDOWN presentation and mounts Phaser for the match route before LOOTING. Phaser can preload behind the countdown. At TALLY, the controller disables Phaser input immediately on authoritative phase change while React presents the result overlay; route teardown still performs final destruction.
+React owns LOBBY and the countdown overlay while mounting Phaser behind `COUNTDOWN`. Phaser receives snapshots through the room client rather than owning the socket. At TALLY, the controller will disable Phaser input immediately on authoritative phase change while React presents the result overlay; route teardown still performs final destruction.
 
 ## Testing strategy
 
