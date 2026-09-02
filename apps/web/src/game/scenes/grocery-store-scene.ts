@@ -32,6 +32,7 @@ import {
 } from '@69-seconds/shared';
 import { PlayerEntity } from '../entities/player-entity.js';
 import { GameInput } from '../input/game-input.js';
+import { DEFAULT_INPUT_BINDINGS, bindingLabel, type InputBindings } from '../input/key-bindings.js';
 import { RemoteInterpolationBuffer } from '../network/interpolation.js';
 import {
   applyInteractionResult,
@@ -85,12 +86,16 @@ export class GroceryStoreScene extends Phaser.Scene {
   private recoveringUntilServerMs = 0;
   private shoveCooldownEndsAtServerMs = 0;
   private lastPublishedSprint = '';
+  private publishedExhausted = false;
+  private lastSprintTrailAt = 0;
+  private bindings: InputBindings;
   private readonly unsubscribes: (() => void)[] = [];
 
   constructor(callbacks: GroceryGameCallbacks) {
     super('grocery-store-test');
     this.callbacks = callbacks;
     this.phase = callbacks.initialPhase ?? 'COUNTDOWN';
+    this.bindings = callbacks.getBindings?.() ?? DEFAULT_INPUT_BINDINGS;
   }
 
   create(): void {
@@ -103,21 +108,23 @@ export class GroceryStoreScene extends Phaser.Scene {
     const initialPosition = localState?.position.x || localState?.position.y ? localState.position : fallbackSpawn;
     this.player = new PlayerEntity(this, initialPosition.x, initialPosition.y);
     for (const state of this.callbacks.initialPlayers ?? []) {
-      if (state.id !== this.callbacks.localPlayerId) this.ensureRemotePlayer(state.id, state.position.x, state.position.y);
+      if (state.id !== this.callbacks.localPlayerId) {
+        this.ensureRemotePlayer(state.id, state.position.x, state.position.y, state.displayName);
+      }
     }
-    this.controls = new GameInput(this);
+    this.controls = new GameInput(this, this.bindings);
     this.publishInventory();
-    this.cameras.main.startFollow(this.player, false, 0.1, 0.1);
+    this.cameras.main.startFollow(this.player, false, 0.075, 0.075);
     this.cameras.main.setBackgroundColor('#132126');
     this.resizeCamera(this.scale.gameSize);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.resizeCamera, this);
 
     this.feedbackText = this.add.text(24, 24, '', {
       color: '#172126', backgroundColor: '#f6ca61', fontFamily: 'monospace', fontSize: '16px', padding: { x: 10, y: 7 },
-    }).setDepth(40).setScrollFactor(0).setAlpha(0);
+    }).setDepth(10_000).setScrollFactor(0).setAlpha(0);
     this.promptText = this.add.text(this.scale.width / 2, this.scale.height - 42, '', {
       color: '#fff8e6', backgroundColor: '#203735', fontFamily: 'monospace', fontSize: '16px', fontStyle: 'bold', padding: { x: 12, y: 8 },
-    }).setDepth(40).setScrollFactor(0).setOrigin(0.5).setAlpha(0);
+    }).setDepth(10_000).setScrollFactor(0).setOrigin(0.5).setAlpha(0);
 
     const resetInput = () => this.controls?.reset();
     const inputTarget = this.game.canvas.parentElement;
@@ -140,6 +147,10 @@ export class GroceryStoreScene extends Phaser.Scene {
     }));
     this.subscribe(this.callbacks.subscribeShoveLanded?.((event) => {
       if (this.belongsToRoom(event.roomCode)) this.applyShoveLanded(event);
+    }));
+    this.subscribe(this.callbacks.subscribeBindings?.((bindings) => {
+      this.bindings = bindings;
+      this.controls?.updateBindings(bindings);
     }));
     this.publishSprint();
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
@@ -189,7 +200,8 @@ export class GroceryStoreScene extends Phaser.Scene {
     }
     // A recovering player reads as planted: their own input is going nowhere.
     const velocity = recovering ? { x: 0, y: 0 } : movementVelocity(frame.movement, this.sprinting);
-    this.player.move(velocity, this.sprinting && !recovering);
+    this.player.move(velocity, this.sprinting && !recovering, this.reducedMotion());
+    if (this.sprinting && !recovering) this.playSprintTrail();
     this.interpolateRemotePlayers();
     const action = this.controls.readAction();
     if (this.phase === 'LOOTING' && action === 'INTERACT') void this.interact();
@@ -250,9 +262,9 @@ export class GroceryStoreScene extends Phaser.Scene {
     }
   }
 
-  private ensureRemotePlayer(playerId: string, x: number, y: number): void {
+  private ensureRemotePlayer(playerId: string, x: number, y: number, displayName?: string): void {
     if (this.remotePlayers.has(playerId)) return;
-    const remote = new PlayerEntity(this, x, y).setAlpha(0.82);
+    const remote = new PlayerEntity(this, x, y).setRemote(displayName ?? 'Rival');
     remote.setData('playerId', playerId);
     this.remotePlayers.set(playerId, remote);
     this.remoteBuffers.set(playerId, new RemoteInterpolationBuffer());
@@ -265,7 +277,7 @@ export class GroceryStoreScene extends Phaser.Scene {
       if (!position) continue;
       const velocity = { x: position.x - remote.x, y: position.y - remote.y };
       remote.setPosition(position.x, position.y);
-      remote.move(velocity, false);
+      remote.move(velocity, false, this.reducedMotion());
     }
   }
 
@@ -366,7 +378,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     // These inputs are being ignored server-side; replaying them would undo the knockback.
     this.pendingInputs = [];
     this.player?.setPosition(event.targetPosition.x, event.targetPosition.y);
-    this.cameras.main.shake(160, 0.006);
+    if (!this.reducedMotion()) this.cameras.main.shake(120, 0.0035);
     this.showFeedback({ kind: 'SHOVE_TAKEN', message: 'Shoved · regaining your footing' });
     this.publishSprint();
   }
@@ -390,14 +402,14 @@ export class GroceryStoreScene extends Phaser.Scene {
       16,
       0xf6ca61,
       0.5,
-    ).setDepth(24);
-    this.tweens.add({ targets: arc, scale: 1.6, alpha: 0, duration: 200, onComplete: () => arc.destroy() });
+    ).setDepth(1_000 + this.player.y + 5);
+    this.tweens.add({ targets: arc, scale: 1.6, alpha: 0, duration: this.reducedMotion() ? 1 : 180, onComplete: () => arc.destroy() });
   }
 
   private playShoveImpact(position: Vector2): void {
     const burst = this.add.circle(position.x, position.y, 20, 0xe86b49, 0.55)
-      .setStrokeStyle(3, 0xfff2cf, 0.9).setDepth(25);
-    this.tweens.add({ targets: burst, scale: 2.1, alpha: 0, duration: 320, onComplete: () => burst.destroy() });
+      .setStrokeStyle(3, 0xfff2cf, 0.9).setDepth(1_000 + position.y + 5);
+    this.tweens.add({ targets: burst, scale: 2.1, alpha: 0, duration: this.reducedMotion() ? 1 : 260, onComplete: () => burst.destroy() });
   }
 
   /** Coalesced so a 60 Hz render loop does not drive a React update every frame. */
@@ -410,6 +422,10 @@ export class GroceryStoreScene extends Phaser.Scene {
       shoveCooldownFraction: Math.max(0, Math.min(1, (this.shoveCooldownEndsAtServerMs - now) / SHOVE.cooldownMs)),
       recovering: now < this.recoveringUntilServerMs,
     };
+    if (state.exhausted && !this.publishedExhausted) {
+      this.showFeedback({ kind: 'SPRINT_EXHAUSTED', message: 'Sprint spent · keep moving at a walk to recover' });
+    }
+    this.publishedExhausted = state.exhausted;
     const signature = [
       Math.round(state.fraction * 50),
       state.sprinting,
@@ -444,11 +460,11 @@ export class GroceryStoreScene extends Phaser.Scene {
 
   private createLootObject(id: string, catalogId: string, x: number, y: number): Phaser.GameObjects.Container {
     const catalog = lootCatalogEntry(catalogId);
-    const marker = this.add.circle(0, 0, 15, catalog.color).setStrokeStyle(3, 0x213a37).setDepth(18);
+    const marker = this.add.circle(0, 0, 15, catalog.color).setStrokeStyle(3, 0x213a37);
     const tag = this.add.text(0, -28, catalog.shortLabel, {
       color: '#213a37', fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(18);
-    return this.add.container(x, y, [marker, tag]).setName(id).setDepth(18);
+    }).setOrigin(0.5);
+    return this.add.container(x, y, [marker, tag]).setName(id).setDepth(1_000 + y - 4);
   }
 
   /** Mirrors the server's radius and line-of-access checks so prompts stay honest. */
@@ -489,14 +505,16 @@ export class GroceryStoreScene extends Phaser.Scene {
     if (item) {
       const catalog = lootCatalogEntry(item.catalogId);
       const full = carried >= GAME.maxCarriedItems;
-      this.setPrompt(full ? 'HANDS FULL · deposit at your cart' : `SPACE · pick up ${catalog.label}`);
+      this.setPrompt(full
+        ? 'HANDS FULL · deposit at your cart'
+        : `${bindingLabel(this.bindings.interact)} · pick up ${catalog.label}`);
       return;
     }
     const cart = this.nearestReachableCart();
     if (cart) {
       if (cart.id !== this.assignedCartId()) this.setPrompt(`WRONG CART · ${cartLabel(cart.id)} is not assigned to you`);
       else if (carried === 0) this.setPrompt('YOUR CART · collect an item first');
-      else this.setPrompt(`SPACE · deposit ${carried} item(s) in your cart`);
+      else this.setPrompt(`${bindingLabel(this.bindings.interact)} · deposit ${carried} item(s) in your cart`);
       return;
     }
     this.setPrompt('Explore the aisles · the server owns every shelf');
@@ -506,7 +524,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     const shovable = this.phase === 'LOOTING' && !this.isRecovering()
       && this.serverNowMs() >= this.shoveCooldownEndsAtServerMs
       && this.nearestShovableTarget() !== undefined;
-    this.writePrompt(shovable ? `${text} · CTRL shove` : text);
+    this.writePrompt(shovable ? `${text} · ${bindingLabel(this.bindings.shove)} shove` : text);
   }
 
   private writePrompt(text: string): void {
@@ -536,9 +554,11 @@ export class GroceryStoreScene extends Phaser.Scene {
 
   private feedbackFor(result: InteractionResult): GameFeedback {
     if (result.outcome === 'PICKED_UP') {
+      this.playPickupEffect();
       return { kind: 'PICKED_UP', message: `Picked up ${lootCatalogEntry(result.catalogId).label}` };
     }
     if (result.outcome === 'DEPOSITED') {
+      this.playDepositEffect();
       return { kind: 'DEPOSITED', message: `Deposited ${result.itemIds.length} item(s) · cart holds ${result.cartItemCount}` };
     }
     return { kind: result.reason, message: result.message };
@@ -561,6 +581,7 @@ export class GroceryStoreScene extends Phaser.Scene {
   private resizeCamera(gameSize: Phaser.Structs.Size): void {
     const minimumZoom = Math.max(gameSize.width / MAP_WIDTH, gameSize.height / MAP_HEIGHT, 1);
     this.cameras.main.setZoom(minimumZoom);
+    this.cameras.main.setDeadzone(Math.min(240, gameSize.width * 0.22), Math.min(150, gameSize.height * 0.2));
   }
 
   private drawStore(): void {
@@ -586,7 +607,12 @@ export class GroceryStoreScene extends Phaser.Scene {
     shelfArt.lineStyle(4, 0x213a37, 1).strokeRoundedRect(0, 0, 260, 72, 8);
     shelfArt.generateTexture(SHELF_TEXTURE, 260, 72);
     shelfArt.destroy();
-    for (const shelf of STORE_VISUAL_LAYERS.shelves) this.add.image(shelf.x, shelf.y, SHELF_TEXTURE).setTint(shelf.tint).setDepth(10);
+    for (const shelf of STORE_VISUAL_LAYERS.shelves) {
+      this.add.ellipse(shelf.x + 5, shelf.y + 31, shelf.width + 18, 32, 0x162c2d, 0.2)
+        .setDepth(1_000 + shelf.y + shelf.height / 2 - 2);
+      this.add.image(shelf.x, shelf.y, SHELF_TEXTURE).setTint(shelf.tint)
+        .setDepth(1_000 + shelf.y + shelf.height / 2);
+    }
     for (const cart of STORE_OBJECT_LAYER.carts) this.drawCart(cart);
     this.add.text(MAP_WIDTH / 2, 72, '69 SECONDS · TEST MARKET', {
       color: '#29403c', fontFamily: 'monospace', fontSize: '30px', fontStyle: 'bold',
@@ -598,15 +624,54 @@ export class GroceryStoreScene extends Phaser.Scene {
 
   private drawCart(cart: StoreCart): void {
     const assigned = cart.id === this.assignedCartId();
-    const art = this.add.graphics().setDepth(12);
+    const fixtureDepth = 1_000 + cart.y + cart.height / 2;
+    const art = this.add.graphics().setDepth(fixtureDepth);
     art.fillStyle(assigned ? 0xf5c95f : 0x9aadb0, 1).fillRoundedRect(cart.x - 55, cart.y - 26, 82, 48, 8);
     art.lineStyle(6, assigned ? 0xe86b49 : 0x587076, 1).lineBetween(cart.x + 26, cart.y - 18, cart.x + 56, cart.y - 48);
     art.fillStyle(0x213a37, 1).fillCircle(cart.x - 32, cart.y + 28, 8).fillCircle(cart.x + 18, cart.y + 28, 8);
     this.add.text(cart.x - 15, cart.y - 2, `${cart.slot + 1}`, {
       color: '#213a37', fontFamily: 'monospace', fontSize: '20px', fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(13);
+    }).setOrigin(0.5).setDepth(fixtureDepth + 1);
     this.add.text(cart.x, cart.y + 48, assigned ? 'YOUR CART' : cart.label.toUpperCase(), {
       color: assigned ? '#9f4237' : '#345059', fontFamily: 'monospace', fontSize: '12px', fontStyle: 'bold',
-    }).setOrigin(0.5).setDepth(13);
+    }).setOrigin(0.5).setDepth(fixtureDepth + 1);
+  }
+
+  private reducedMotion(): boolean {
+    return this.callbacks.prefersReducedMotion?.() ?? false;
+  }
+
+  private playSprintTrail(): void {
+    if (!this.player || this.reducedMotion() || this.time.now - this.lastSprintTrailAt < 90) return;
+    this.lastSprintTrailAt = this.time.now;
+    const puff = this.add.circle(this.player.x - this.facing.x * 17, this.player.y - this.facing.y * 17, 6, 0xffe28a, 0.26)
+      .setDepth(1_000 + this.player.y - 3);
+    this.tweens.add({ targets: puff, scale: 1.8, alpha: 0, duration: 220, onComplete: () => puff.destroy() });
+  }
+
+  private playPickupEffect(): void {
+    if (!this.player) return;
+    for (let index = 0; index < 4; index += 1) {
+      const angle = index * Math.PI / 2;
+      const spark = this.add.circle(this.player.x, this.player.y, 3, 0xf6ca61, 0.9)
+        .setDepth(1_000 + this.player.y + 4);
+      this.tweens.add({
+        targets: spark,
+        x: this.player.x + Math.cos(angle) * 28,
+        y: this.player.y + Math.sin(angle) * 22,
+        alpha: 0,
+        duration: this.reducedMotion() ? 1 : 220,
+        onComplete: () => spark.destroy(),
+      });
+    }
+  }
+
+  private playDepositEffect(): void {
+    const cart = STORE_OBJECT_LAYER.carts.find((candidate) => candidate.id === this.assignedCartId());
+    if (!cart) return;
+    const ring = this.add.circle(cart.x, cart.y, 26, 0xd2ec74, 0.18)
+      .setStrokeStyle(4, 0xfff1a8, 0.95).setDepth(1_000 + cart.y + cart.height / 2 + 3);
+    this.tweens.add({ targets: ring, scale: 2.2, alpha: 0, duration: this.reducedMotion() ? 1 : 320, onComplete: () => ring.destroy() });
+    if (!this.reducedMotion()) this.cameras.main.shake(90, 0.0015);
   }
 }

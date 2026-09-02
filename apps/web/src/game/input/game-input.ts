@@ -1,6 +1,11 @@
 import Phaser from 'phaser';
 import type { MovementInput } from '@69-seconds/shared';
 import type { GameAction } from '../types.js';
+import {
+  DEFAULT_INPUT_BINDINGS,
+  phaserKeyCode,
+  type InputBindings,
+} from './key-bindings.js';
 
 interface GameplayKeys {
   up: Phaser.Input.Keyboard.Key;
@@ -25,21 +30,19 @@ export interface InputFrame {
 
 export class GameInput {
   private readonly keyboard: Phaser.Input.Keyboard.KeyboardPlugin;
-  private readonly keys: GameplayKeys;
+  private keys: GameplayKeys;
 
-  constructor(scene: Phaser.Scene) {
+  constructor(scene: Phaser.Scene, bindings: InputBindings = DEFAULT_INPUT_BINDINGS) {
     const keyboard = scene.input.keyboard;
     if (!keyboard) throw new Error('The grocery scene requires keyboard input.');
     this.keyboard = keyboard;
-    this.keys = keyboard.addKeys({
-      up: Phaser.Input.Keyboard.KeyCodes.W,
-      down: Phaser.Input.Keyboard.KeyCodes.S,
-      left: Phaser.Input.Keyboard.KeyCodes.A,
-      right: Phaser.Input.Keyboard.KeyCodes.D,
-      sprint: Phaser.Input.Keyboard.KeyCodes.SHIFT,
-      interact: Phaser.Input.Keyboard.KeyCodes.SPACE,
-      shove: Phaser.Input.Keyboard.KeyCodes.CTRL,
-    }, true, false) as GameplayKeys;
+    this.keys = this.createKeys(bindings);
+  }
+
+  updateBindings(bindings: InputBindings): void {
+    this.reset();
+    for (const key of Object.values(this.keys)) this.keyboard.removeKey(key, true);
+    this.keys = this.createKeys(bindings);
   }
 
   read(): InputFrame {
@@ -60,5 +63,11 @@ export class GameInput {
 
   reset(): void {
     this.keyboard.resetKeys();
+  }
+
+  private createKeys(bindings: InputBindings): GameplayKeys {
+    return this.keyboard.addKeys(Object.fromEntries(
+      Object.entries(bindings).map(([action, code]) => [action, phaserKeyCode(code)]),
+    ), true, false) as GameplayKeys;
   }
 }

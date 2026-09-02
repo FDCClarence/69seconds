@@ -1,16 +1,7 @@
 import Phaser from 'phaser';
 import { GroceryStoreScene } from './scenes/grocery-store-scene.js';
 import type { GroceryGameFactory } from './types.js';
-
-const CAPTURED_KEYS = [
-  Phaser.Input.Keyboard.KeyCodes.W,
-  Phaser.Input.Keyboard.KeyCodes.A,
-  Phaser.Input.Keyboard.KeyCodes.S,
-  Phaser.Input.Keyboard.KeyCodes.D,
-  Phaser.Input.Keyboard.KeyCodes.SHIFT,
-  Phaser.Input.Keyboard.KeyCodes.SPACE,
-  Phaser.Input.Keyboard.KeyCodes.CTRL,
-];
+import { DEFAULT_INPUT_BINDINGS, capturedKeyCodes } from './input/key-bindings.js';
 
 export const createGroceryGame: GroceryGameFactory = (parent, callbacks) => new Phaser.Game({
   type: Phaser.AUTO,
@@ -28,7 +19,7 @@ export const createGroceryGame: GroceryGameFactory = (parent, callbacks) => new 
     height: '100%',
   },
   input: {
-    keyboard: { target: parent, capture: CAPTURED_KEYS },
+    keyboard: { target: parent, capture: capturedKeyCodes(callbacks.getBindings?.() ?? DEFAULT_INPUT_BINDINGS) },
     mouse: { target: parent },
     touch: { target: parent },
   },

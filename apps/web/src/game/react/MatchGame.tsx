@@ -1,8 +1,26 @@
 import { GAME, type RoomPublicState } from '@69-seconds/shared';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { RoomClient, SocketConnectionState } from '../../room-client.js';
+import {
+  gameAudio,
+  loadAudioSettings,
+  saveAudioSettings,
+  type GameAudioCue,
+  type GameAudioSettings,
+} from '../audio/game-audio.js';
+import {
+  BINDABLE_ACTIONS,
+  DEFAULT_INPUT_BINDINGS,
+  bindingLabel,
+  isBindableCode,
+  loadInputBindings,
+  rebindAction,
+  saveInputBindings,
+  type BindableAction,
+  type InputBindings,
+} from '../input/key-bindings.js';
 import type { CarryHudState, GameFeedback, GroceryGameFactory, SprintHudState } from '../types.js';
 import { mountGroceryGame } from './game-lifecycle.js';
-import type { RoomClient } from '../../room-client.js';
 
 const READY_SPRINT: SprintHudState = {
   fraction: 1,
@@ -12,36 +30,77 @@ const READY_SPRINT: SprintHudState = {
   recovering: false,
 };
 
+const ACTION_LABELS: Readonly<Record<BindableAction, string>> = {
+  up: 'Move up', down: 'Move down', left: 'Move left', right: 'Move right',
+  sprint: 'Sprint', interact: 'Interact', shove: 'Shove',
+};
+
 export function MatchGame({
   room,
   localPlayerId,
   roomClient,
+  connection,
+  networkError,
+  onDismissNetworkError,
   onLeave,
   gameFactory,
 }: {
   room: RoomPublicState;
   localPlayerId: string;
   roomClient: RoomClient;
+  connection: SocketConnectionState;
+  networkError: string | null;
+  onDismissNetworkError: () => void;
   onLeave: () => Promise<void>;
   gameFactory: GroceryGameFactory | undefined;
 }) {
   const gameHost = useRef<HTMLDivElement>(null);
+  const bindingSubscribers = useRef(new Set<(bindings: InputBindings) => void>());
   const [ready, setReady] = useState(false);
   const [feedback, setFeedback] = useState<GameFeedback | null>(null);
+  const [persistentNetworkError, setPersistentNetworkError] = useState<string | null>(null);
   const [inventory, setInventory] = useState<CarryHudState>({ carriedItems: [], depositedCount: 0, synchronized: false });
   const [sprint, setSprint] = useState<SprintHudState>(READY_SPRINT);
   const [displayPhase, setDisplayPhase] = useState(room.phase);
   const [phaseEndsAtMs, setPhaseEndsAtMs] = useState(room.phaseEndsAtMs);
   const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [bindings, setBindings] = useState<InputBindings>(() => loadInputBindings());
+  const [audioSettings, setAudioSettings] = useState<GameAudioSettings>(() => loadAudioSettings());
+  const bindingsRef = useRef(bindings);
+  const reducedMotion = usePrefersReducedMotion();
+  const reducedMotionRef = useRef(reducedMotion);
   const serverClock = useRef({ serverTimeMs: room.serverTimeMs, receivedAtMs: Date.now() });
   const initialRoom = useRef(room);
   const actionTimer = useRef<number | undefined>(undefined);
+  const lastCountdownCue = useRef('');
 
   const showFeedback = useCallback((nextFeedback: GameFeedback) => {
     setFeedback(nextFeedback);
+    if (nextFeedback.kind === 'DESYNCHRONIZED') setPersistentNetworkError(nextFeedback.message);
+    playFeedbackCue(nextFeedback);
     window.clearTimeout(actionTimer.current);
-    actionTimer.current = window.setTimeout(() => setFeedback(null), 1_200);
+    actionTimer.current = window.setTimeout(
+      () => setFeedback(null),
+      nextFeedback.kind === 'DESYNCHRONIZED' ? 5_000 : 1_500,
+    );
   }, []);
+
+  useEffect(() => {
+    bindingsRef.current = bindings;
+    saveInputBindings(bindings);
+    for (const listener of bindingSubscribers.current) listener(bindings);
+  }, [bindings]);
+  useEffect(() => {
+    reducedMotionRef.current = reducedMotion;
+  }, [reducedMotion]);
+  useEffect(() => {
+    gameAudio.setSettings(audioSettings);
+    saveAudioSettings(audioSettings);
+  }, [audioSettings]);
+  useEffect(() => {
+    if (connection !== 'CONNECTED') gameHost.current?.dispatchEvent(new Event('game-input-blur'));
+  }, [connection]);
   useEffect(() => {
     setDisplayPhase(room.phase);
     setPhaseEndsAtMs(room.phaseEndsAtMs);
@@ -65,6 +124,14 @@ export function MatchGame({
     const timer = window.setInterval(refresh, 100);
     return () => window.clearInterval(timer);
   }, [displayPhase, phaseEndsAtMs]);
+  useEffect(() => {
+    if (remainingSeconds === null) return;
+    const cueKey = `${displayPhase}:${remainingSeconds}`;
+    if (lastCountdownCue.current === cueKey) return;
+    lastCountdownCue.current = cueKey;
+    if (displayPhase === 'COUNTDOWN' && remainingSeconds > 0 && remainingSeconds <= 3) gameAudio.play('countdown');
+    if (displayPhase === 'COUNTDOWN' && remainingSeconds === 0) gameAudio.play('go');
+  }, [displayPhase, remainingSeconds]);
 
   useEffect(() => {
     const parent = gameHost.current;
@@ -87,7 +154,7 @@ export function MatchGame({
         roomCode: initialRoom.current.code,
         initialPhase: initialRoom.current.phase,
         initialPlayers: initialRoom.current.players,
-        sendInput: (movement, sprint) => roomClient.sendInput?.(movement, sprint) ?? null,
+        sendInput: (movement, sprintHeld) => roomClient.sendInput?.(movement, sprintHeld) ?? null,
         subscribeSnapshots: (listener) => roomClient.subscribeSnapshots?.(listener) ?? (() => undefined),
         requestInteraction: (request) => roomClient.requestInteraction
           ? roomClient.requestInteraction(request)
@@ -99,6 +166,12 @@ export function MatchGame({
         subscribeLootUpdates: (listener) => roomClient.subscribeLootUpdates?.(listener) ?? (() => undefined),
         subscribeShoveLanded: (listener) => roomClient.subscribeShoveLanded?.(listener) ?? (() => undefined),
         onPhaseChange: setDisplayPhase,
+        getBindings: () => bindingsRef.current,
+        subscribeBindings: (listener) => {
+          bindingSubscribers.current.add(listener);
+          return () => bindingSubscribers.current.delete(listener);
+        },
+        prefersReducedMotion: () => reducedMotionRef.current,
       });
     })();
     return () => {
@@ -108,25 +181,54 @@ export function MatchGame({
     };
   }, [gameFactory, localPlayerId, roomClient, showFeedback]);
 
-  return <main className="game-route">
+  const controlsReady = ready && inventory.synchronized;
+  const disconnected = connection !== 'CONNECTED';
+  const inventoryFull = inventory.carriedItems.length >= GAME.maxCarriedItems;
+  const feedbackTone = feedback ? feedbackClass(feedback) : '';
+
+  function captureGameplayKey(event: ReactKeyboardEvent<HTMLDivElement>): void {
+    if (Object.values(bindings).includes(event.code)) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  function focusGame(): void {
+    gameHost.current?.focus();
+    void gameAudio.unlock();
+  }
+
+  return <main className={`game-route${sprint.sprinting ? ' is-sprinting' : ''}${sprint.recovering ? ' is-recovering' : ''}`}>
     <div
       className="phaser-focus-frame"
       ref={gameHost}
       tabIndex={0}
       role="application"
-      aria-label="69 Seconds grocery store prototype. Click or focus to control the player."
-      onPointerDown={(event) => event.currentTarget.focus()}
+      aria-label="69 Seconds grocery store. Focus to control your shopper; Tab releases gameplay controls."
+      aria-keyshortcuts={`${bindingLabel(bindings.interact)} ${bindingLabel(bindings.shove)}`}
+      onPointerDown={focusGame}
+      onKeyDownCapture={captureGameplayKey}
       onBlur={() => gameHost.current?.dispatchEvent(new Event('game-input-blur'))}
     />
-    <section className="game-hud" aria-label="Gameplay controls and carry slots">
+
+    <section className="game-hud" aria-label="Gameplay status, controls, and inventory">
       <div className="game-hud-topline">
         <div><span className="hud-label">Room</span><strong>{room.code}</strong></div>
-        <div className={`hud-status ${ready && inventory.synchronized ? 'is-ready' : ''}`}><i />{!ready ? 'Loading scene' : inventory.synchronized ? 'Loot synchronized' : 'Awaiting loot state'}</div>
-        <div><span className="hud-label">Server phase</span><strong>{displayPhase}{displayPhase === 'LOOTING' && remainingSeconds !== null ? ` · ${formatMatchTime(remainingSeconds)}` : ''}</strong></div>
+        <div className={`hud-status ${controlsReady && !disconnected ? 'is-ready' : ''}`}>
+          <i aria-hidden="true" />
+          <span>{disconnected ? 'Connection interrupted' : !ready ? 'Loading store' : inventory.synchronized ? 'Server synchronized' : 'Syncing inventory'}</span>
+        </div>
+        <div className="match-clock">
+          <span className="hud-label">Server clock</span>
+          <strong>{displayPhase === 'LOOTING' && remainingSeconds !== null ? formatMatchTime(remainingSeconds) : phaseLabel(displayPhase)}</strong>
+        </div>
       </div>
-      <div className="game-controls" aria-label="Controls">
-        <span><kbd>WASD</kbd> move</span><span><kbd>Shift</kbd> sprint</span>
-        <span><kbd>Space</kbd> interact</span><span><kbd>Ctrl</kbd> shove</span>
+      <div className="game-controls" aria-label="Current controls">
+        <span><kbd>{bindingLabel(bindings.up)}{bindingLabel(bindings.left)}{bindingLabel(bindings.down)}{bindingLabel(bindings.right)}</kbd> move</span>
+        <span><kbd>{bindingLabel(bindings.sprint)}</kbd> sprint</span>
+        <span><kbd>{bindingLabel(bindings.interact)}</kbd> interact</span>
+        <span><kbd>{bindingLabel(bindings.shove)}</kbd> shove</span>
+        <button type="button" className="hud-settings" aria-expanded={settingsOpen} onClick={() => { void gameAudio.unlock(); setSettingsOpen((open) => !open); }}>Settings</button>
       </div>
       <div className="meter-hud">
         <div className="meter-row">
@@ -151,31 +253,158 @@ export function MatchGame({
             aria-label={sprint.shoveCooldownFraction > 0 ? 'Shove recharging' : 'Shove ready'}
           ><i style={{ width: `${(1 - sprint.shoveCooldownFraction) * 100}%` }} /></div>
         </div>
-        {/* Visual only: both meters already carry this state in their own labels,
-            and a second polite region would talk over the feedback indicator. */}
         <span className="meter-note" aria-hidden="true">
-          {sprint.recovering ? 'Recovering' : sprint.exhausted ? 'Walk to recover' : ''}
+          {sprint.recovering ? '✕ Recovering' : sprint.exhausted ? '! Walk to recover' : sprint.sprinting ? '» Sprinting' : '✓ Ready'}
         </span>
       </div>
-      <div className="carry-hud"><span className="hud-label">Carry</span><ol aria-label={`${inventory.carriedItems.length} of ${GAME.maxCarriedItems} carry slots filled`}>
-        {Array.from({ length: GAME.maxCarriedItems }, (_, index) => {
-          const item = inventory.carriedItems[index];
-          const className = item ? `is-filled${item.pending ? ' is-pending' : ''}` : undefined;
-          return <li key={index} className={className} aria-label={item ? `${item.label} in carry slot ${index + 1}${item.pending ? ', awaiting confirmation' : ''}` : `Empty carry slot ${index + 1}`}>
-            <span>{index + 1}</span>{item && <b style={{ backgroundColor: item.color }} title={item.label}>{item.shortLabel}</b>}
-          </li>;
-        })}
-      </ol><span className="deposit-count" aria-label={`${inventory.depositedCount} items deposited`}>Cart {inventory.depositedCount}</span></div>
-      <button type="button" className="hud-leave" onClick={() => void onLeave()}>Leave test</button>
+      <div className={`carry-hud${inventoryFull ? ' is-full' : ''}`}>
+        <span className="hud-label">Carry</span>
+        <ol aria-label={`${inventory.carriedItems.length} of ${GAME.maxCarriedItems} carry slots filled`}>
+          {Array.from({ length: GAME.maxCarriedItems }, (_, index) => {
+            const item = inventory.carriedItems[index];
+            const className = item ? `is-filled${item.pending ? ' is-pending' : ''}` : undefined;
+            return <li key={index} className={className} aria-label={item ? `${item.label} in carry slot ${index + 1}${item.pending ? ', awaiting confirmation' : ''}` : `Empty carry slot ${index + 1}`}>
+              <span>{index + 1}</span>{item && <b style={{ backgroundColor: item.color }} title={item.label}>{item.shortLabel}</b>}
+            </li>;
+          })}
+        </ol>
+        <span className="deposit-count" aria-label={`${inventory.depositedCount} items deposited`}><b>{inventory.depositedCount}</b> banked</span>
+        {inventoryFull && <span className="carry-warning" aria-hidden="true">FULL</span>}
+      </div>
+      <button type="button" className="hud-leave" onClick={() => void onLeave()}>Leave match</button>
     </section>
-    {displayPhase === 'COUNTDOWN' && <div className="countdown-overlay" role="timer" aria-label="Match countdown">
-      <span>Get ready</span><strong>{remainingSeconds ?? '…'}</strong>
+
+    {settingsOpen && <GameSettings
+      bindings={bindings}
+      audio={audioSettings}
+      onBindingsChange={setBindings}
+      onAudioChange={setAudioSettings}
+      onClose={() => {
+        setSettingsOpen(false);
+        window.setTimeout(() => gameHost.current?.focus(), 0);
+      }}
+    />}
+
+    {!controlsReady && !disconnected && <div className="game-loading-overlay" role="status" aria-live="polite" aria-busy="true">
+      <span className="loading-mark" aria-hidden="true">69</span>
+      <strong>{!ready ? 'Opening the store' : 'Synchronizing inventory'}</strong>
+      <small>Authoritative match state is loading</small>
     </div>}
-    <div className={`game-action-indicator ${feedback ? 'is-visible' : ''}`} role="status" aria-live="polite">
-      {feedback?.message ?? ''}
+
+    {disconnected && <div className="connection-overlay" role="alert" aria-live="assertive">
+      <span className="connection-icon" aria-hidden="true">!</span>
+      <div>
+        <strong>{connection === 'RECONNECTING' ? 'Connection lost — reconnecting' : 'Match server unavailable'}</strong>
+        <p>Your inputs are paused. The server still owns the match clock and outcome.</p>
+      </div>
+    </div>}
+
+    {(persistentNetworkError || networkError) && <div className="network-error-banner" role="alert">
+      <span><b>Network error</b> {persistentNetworkError ?? networkError}</span>
+      <button type="button" onClick={() => { setPersistentNetworkError(null); onDismissNetworkError(); }} aria-label="Dismiss network error">×</button>
+    </div>}
+
+    {displayPhase === 'COUNTDOWN' && <div className="countdown-overlay" role="timer" aria-label={`Match begins in ${remainingSeconds ?? 'a moment'}`}>
+      <span>Doors open in</span>
+      <strong key={remainingSeconds}>{remainingSeconds ?? '…'}</strong>
+      <small>Move on GO</small>
+    </div>}
+
+    <div className={`game-action-indicator ${feedback ? `is-visible ${feedbackTone}` : ''}`} role="status" aria-live="polite">
+      {feedback && <><span aria-hidden="true">{feedbackIcon(feedback)}</span><strong>{feedback.message}</strong></>}
     </div>
-    <p className="focus-hint">Click the store to capture controls · focus is released when you tab away</p>
+    <p className="focus-hint"><b>Click store</b> to capture controls <span aria-hidden="true">·</span> <b>Tab</b> to release</p>
   </main>;
+}
+
+function GameSettings({ bindings, audio, onBindingsChange, onAudioChange, onClose }: {
+  bindings: InputBindings;
+  audio: GameAudioSettings;
+  onBindingsChange: (bindings: InputBindings) => void;
+  onAudioChange: (settings: GameAudioSettings) => void;
+  onClose: () => void;
+}) {
+  const [listening, setListening] = useState<BindableAction | null>(null);
+
+  useEffect(() => {
+    if (!listening) return undefined;
+    const capture = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.code === 'Escape') {
+        setListening(null);
+        return;
+      }
+      if (!isBindableCode(event.code)) return;
+      onBindingsChange(rebindAction(bindings, listening, event.code));
+      setListening(null);
+    };
+    window.addEventListener('keydown', capture, true);
+    return () => window.removeEventListener('keydown', capture, true);
+  }, [bindings, listening, onBindingsChange]);
+
+  return <aside className="game-settings-panel" aria-label="Game settings">
+    <header><div><span className="hud-label">Game settings</span><h2>Controls & audio</h2></div><button type="button" onClick={onClose} aria-label="Close settings">×</button></header>
+    <section>
+      <div className="settings-heading"><h3>Key bindings</h3><button type="button" onClick={() => onBindingsChange(DEFAULT_INPUT_BINDINGS)}>Reset</button></div>
+      <div className="binding-grid">
+        {BINDABLE_ACTIONS.map((action) => <div key={action}>
+          <span>{ACTION_LABELS[action]}</span>
+          <button
+            type="button"
+            className={listening === action ? 'is-listening' : ''}
+            aria-label={`${ACTION_LABELS[action]} key: ${bindingLabel(bindings[action])}. Activate to rebind.`}
+            onClick={() => setListening(action)}
+          >{listening === action ? 'Press key…' : bindingLabel(bindings[action])}</button>
+        </div>)}
+      </div>
+      <p className="settings-note">A conflicting key swaps assignments. Escape cancels.</p>
+    </section>
+    <section>
+      <div className="settings-heading"><h3>Audio</h3><button type="button" aria-pressed={audio.muted} onClick={() => onAudioChange({ ...audio, muted: !audio.muted })}>{audio.muted ? 'Unmute' : 'Mute'}</button></div>
+      <label>Music <output>{Math.round(audio.musicVolume * 100)}%</output><input aria-label="Music volume" type="range" min="0" max="1" step="0.05" value={audio.musicVolume} onChange={(event) => onAudioChange({ ...audio, musicVolume: Number(event.target.value) })} /></label>
+      <label>SFX <output>{Math.round(audio.sfxVolume * 100)}%</output><input aria-label="Sound effects volume" type="range" min="0" max="1" step="0.05" value={audio.sfxVolume} onChange={(event) => onAudioChange({ ...audio, sfxVolume: Number(event.target.value) })} /></label>
+      <p className="settings-note">Original procedural placeholder tones; no third-party audio assets.</p>
+    </section>
+  </aside>;
+}
+
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
+  useEffect(() => {
+    const query = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    if (!query) return undefined;
+    const update = () => setReduced(query.matches);
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return reduced;
+}
+
+function playFeedbackCue(feedback: GameFeedback): void {
+  const cues: Partial<Record<GameFeedback['kind'], GameAudioCue>> = {
+    PICKED_UP: 'pickup', DEPOSITED: 'deposit', HANDS_FULL: 'inventory-full',
+    SPRINT_EXHAUSTED: 'sprint-empty', SHOVE_LANDED: 'shove', SHOVE_TAKEN: 'shoved',
+    DESYNCHRONIZED: 'error',
+  };
+  gameAudio.play(cues[feedback.kind] ?? (feedbackClass(feedback) === 'is-negative' ? 'error' : 'pickup'));
+}
+
+function feedbackClass(feedback: GameFeedback): 'is-positive' | 'is-warning' | 'is-negative' {
+  if (feedback.kind === 'PICKED_UP' || feedback.kind === 'DEPOSITED' || feedback.kind === 'SHOVE_LANDED') return 'is-positive';
+  if (feedback.kind === 'HANDS_FULL' || feedback.kind === 'SPRINT_EXHAUSTED' || feedback.kind === 'ON_COOLDOWN' || feedback.kind === 'RECOVERING') return 'is-warning';
+  return 'is-negative';
+}
+
+function feedbackIcon(feedback: GameFeedback): string {
+  const tone = feedbackClass(feedback);
+  return tone === 'is-positive' ? '✓' : tone === 'is-warning' ? '!' : '×';
+}
+
+function phaseLabel(phase: RoomPublicState['phase']): string {
+  if (phase === 'COUNTDOWN') return 'GET READY';
+  if (phase === 'TALLY') return 'TIME';
+  return phase;
 }
 
 function formatMatchTime(totalSeconds: number): string {

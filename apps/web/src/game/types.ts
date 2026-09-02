@@ -37,6 +37,7 @@ export type GameFeedbackKind =
   | ShoveRejectionReason
   | 'SHOVE_LANDED'
   | 'SHOVE_TAKEN'
+  | 'SPRINT_EXHAUSTED'
   | 'DESYNCHRONIZED';
 
 export interface GameFeedback {
@@ -65,6 +66,9 @@ export interface GroceryGameCallbacks {
   subscribeLootUpdates?: (listener: (update: LootUpdate) => void) => () => void;
   subscribeShoveLanded?: (listener: (event: ShoveLanded) => void) => () => void;
   onPhaseChange?: (phase: GamePhase) => void;
+  getBindings?: () => InputBindings;
+  subscribeBindings?: (listener: (bindings: InputBindings) => void) => () => void;
+  prefersReducedMotion?: () => boolean;
 }
 
 export interface DestroyableGame {
@@ -91,3 +95,4 @@ import type {
   ShoveRequest,
   ShoveResult,
 } from '@69-seconds/shared';
+import type { InputBindings } from './input/key-bindings.js';

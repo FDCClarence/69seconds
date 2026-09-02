@@ -76,6 +76,7 @@ function openAccountMenu() {
 
 afterEach(() => {
   window.history.replaceState({}, '', '/');
+  window.localStorage.clear();
 });
 
 describe('authentication application', () => {
@@ -190,8 +191,8 @@ describe('authentication application', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Ready' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Start match' }) as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(screen.getByRole('button', { name: 'Start match' }));
-    expect(await screen.findByRole('application', { name: /grocery store prototype/i })).toBeTruthy();
-    expect(screen.getByText('COUNTDOWN')).toBeTruthy();
+    expect(await screen.findByRole('application', { name: /grocery store/i })).toBeTruthy();
+    expect(screen.getByText('GET READY')).toBeTruthy();
   });
 
   it('destroys the local Phaser instance when leaving the match route', async () => {
@@ -204,8 +205,8 @@ describe('authentication application', () => {
     const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
     const rooms = roomClientStub({ joinRoom: vi.fn().mockResolvedValue(startedLobby) });
     renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms, gameFactory);
-    await screen.findByRole('application', { name: /grocery store prototype/i });
-    await userEvent.click(screen.getByRole('button', { name: 'Leave test' }));
+    await screen.findByRole('application', { name: /grocery store/i });
+    await userEvent.click(screen.getByRole('button', { name: 'Leave match' }));
     await waitFor(() => expect(destroy).toHaveBeenCalledWith(true));
     expect(await screen.findByRole('button', { name: 'Create room' })).toBeTruthy();
   });
@@ -282,8 +283,7 @@ describe('authentication application', () => {
       'Sprint stamina 0 percent, spent — walk to recover, recovering from a shove',
     )).toBeTruthy();
     expect(screen.getByLabelText('Shove ready')).toBeTruthy();
-    // Exactly one polite live region, so the shove notice is not talked over.
-    expect(screen.getByRole('status').textContent).toContain('Shoved');
+    expect(screen.getByText('Shoved · regaining your footing')).toBeTruthy();
   });
 
   it('displays the looting clock from server timestamps', async () => {
@@ -296,7 +296,75 @@ describe('authentication application', () => {
     renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
       joinRoom: vi.fn().mockResolvedValue(looting),
     }));
-    expect(await screen.findByText('LOOTING · 1:09')).toBeTruthy();
+    expect(await screen.findByText('1:09')).toBeTruthy();
+  });
+
+  it('keeps gameplay keys scoped, prevents browser actions, and exposes rebindable controls', async () => {
+    const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
+    const synchronizedFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.append(document.createElement('canvas'));
+      callbacks.onReady?.();
+      callbacks.onInventoryChange?.({ carriedItems: [], depositedCount: 0, synchronized: true });
+      return { destroy: () => undefined };
+    };
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
+      joinRoom: vi.fn().mockResolvedValue(startedLobby),
+    }), synchronizedFactory);
+
+    const game = await screen.findByRole('application', { name: /grocery store/i });
+    game.focus();
+    const space = new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true });
+    const control = new KeyboardEvent('keydown', { code: 'ControlLeft', key: 'Control', bubbles: true, cancelable: true });
+    expect(game.dispatchEvent(space)).toBe(false);
+    expect(game.dispatchEvent(control)).toBe(false);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(screen.getByRole('complementary', { name: 'Game settings' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /Move up key: W/i }));
+    fireEvent.keyDown(window, { code: 'ArrowUp', key: 'ArrowUp' });
+    expect(screen.getByRole('button', { name: /Move up key: ↑/i })).toBeTruthy();
+    expect(screen.getByLabelText('Music volume')).toBeTruthy();
+    expect(screen.getByLabelText('Sound effects volume')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Mute' }).getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('shows loading and connection loss as explicit non-color-only status', async () => {
+    let listeners: RoomClientListeners | undefined;
+    const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
+    const rooms = roomClientStub({
+      subscribe: vi.fn((next) => {
+        listeners = next;
+        next.onConnection('CONNECTED');
+        return () => undefined;
+      }),
+      joinRoom: vi.fn().mockResolvedValue(startedLobby),
+    });
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
+    expect(await screen.findByText('Synchronizing inventory')).toBeTruthy();
+
+    act(() => listeners?.onConnection('RECONNECTING'));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Connection lost — reconnecting');
+    expect(alert.textContent).toContain('server still owns the match clock');
+  });
+
+  it('keeps an unacknowledged network outcome visible until dismissed', async () => {
+    const startedLobby: RoomPublicState = { ...lobby, phase: 'LOOTING', phaseEndsAtMs: 70_000 };
+    const failingFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.append(document.createElement('canvas'));
+      callbacks.onReady?.();
+      callbacks.onInventoryChange?.({ carriedItems: [], depositedCount: 0, synchronized: true });
+      callbacks.onFeedback?.({ kind: 'DESYNCHRONIZED', message: 'The server did not confirm that interaction' });
+      return { destroy: () => undefined };
+    };
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
+      joinRoom: vi.fn().mockResolvedValue(startedLobby),
+    }), failingFactory);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Network error');
+    expect(alert.textContent).toContain('did not confirm');
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss network error' }));
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('destroys Phaser at TALLY, waits for the server result, and renders the immutable tally', async () => {
@@ -339,7 +407,7 @@ describe('authentication application', () => {
       return { destroy };
     };
     renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms, gameFactory);
-    await screen.findByRole('application', { name: /grocery store prototype/i });
+    await screen.findByRole('application', { name: /grocery store/i });
 
     act(() => listeners?.onRoom(tallyRoom));
     expect(await screen.findByText('Waiting for the server’s final tally…')).toBeTruthy();
@@ -347,7 +415,7 @@ describe('authentication application', () => {
     expect(destroy).toHaveBeenCalledWith(true);
 
     act(() => listeners?.onResult?.(result));
-    expect(await screen.findByRole('heading', { name: 'Time’s up' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Time’s up.' })).toBeTruthy();
     expect(screen.getByLabelText('2 items deposited in total')).toBeTruthy();
     expect(screen.getByText('Milk')).toBeTruthy();
     expect(screen.getByText('Bread')).toBeTruthy();

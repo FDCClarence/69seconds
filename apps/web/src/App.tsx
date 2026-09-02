@@ -9,6 +9,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { authApi, ApiError, type AuthApi } from './api.js';
 import { MatchGame } from './game/react/MatchGame.js';
+import { gameAudio } from './game/audio/game-audio.js';
 import type { GroceryGameFactory } from './game/types.js';
 import {
   createRoomClient,
@@ -196,6 +197,8 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
       matchTally={matchTally?.roomCode === code ? matchTally : null}
       user={auth.user}
       connection={connection}
+      networkError={notice}
+      onDismissNetworkError={() => setNotice(null)}
       roomClient={rooms}
       onJoin={joinRoom}
       onReady={async (ready) => { setRoom(await rooms.setReady(ready)); }}
@@ -212,7 +215,9 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
 }
 
 function SessionGate() {
-  return <main className="gate" aria-live="polite" aria-busy="true"><p>Loading…</p></main>;
+  return <main className="gate" aria-live="polite" aria-busy="true">
+    <span className="gate-mark" aria-hidden="true">69</span><p>Restoring your session…</p>
+  </main>;
 }
 
 function Brand() {
@@ -318,7 +323,11 @@ function AuthLanding({ api, restoreError, onRetry, onAuthenticated }: {
     <header className="topbar"><Brand /></header>
     <div className="center">
       <div className="panel">
-        <h1 className="sr-only">Log in or register</h1>
+        <div className="panel-intro">
+          <p className="eyebrow">One cart. Four rivals. No wasted motion.</p>
+          <h1>{isRegister ? 'Join the rush.' : 'Clock in.'}</h1>
+          <p>{isRegister ? 'Create your shopper profile, then get to the checkout.' : 'Sign in to create or join a private match.'}</p>
+        </div>
         <div className="tabs" role="tablist" aria-label="Account access">
           <button type="button" role="tab" aria-selected={!isRegister} onClick={() => switchMode('login')}>Log in</button>
           <button type="button" role="tab" aria-selected={isRegister} onClick={() => switchMode('register')}>Register</button>
@@ -416,7 +425,11 @@ function Home({ user, notice, onLogout, onCreate, onJoin }: {
     <TopBar user={user} onLogout={onLogout} />
     <div className="center">
       <div className="panel menu">
-        <h1 className="sr-only">Room menu</h1>
+        <div className="panel-intro">
+          <p className="eyebrow">Ready when you are</p>
+          <h1>Find your aisle.</h1>
+          <p>Create a private room or enter a six-character invite code.</p>
+        </div>
         {notice && <p className="notice" role="status">{notice}</p>}
         <button className="button primary block" type="button" disabled={busy} onClick={() => void create()}>
           {busy ? 'Working…' : 'Create room'}
@@ -444,12 +457,14 @@ function Home({ user, notice, onLogout, onCreate, onJoin }: {
   </main>;
 }
 
-function Lobby({ code, room, matchTally, user, connection, roomClient, onJoin, onReady, onStart, onLeave, onLogout, gameFactory }: {
+function Lobby({ code, room, matchTally, user, connection, networkError, onDismissNetworkError, roomClient, onJoin, onReady, onStart, onLeave, onLogout, gameFactory }: {
   code: string;
   room: RoomPublicState | null;
   matchTally: MatchTally | null;
   user: PublicUser;
   connection: SocketConnectionState;
+  networkError: string | null;
+  onDismissNetworkError: () => void;
   roomClient: RoomClient;
   onJoin: (code: string) => Promise<void>;
   onReady: (ready: boolean) => Promise<void>;
@@ -495,6 +510,9 @@ function Lobby({ code, room, matchTally, user, connection, roomClient, onJoin, o
       room={room}
       localPlayerId={user.id}
       roomClient={roomClient}
+      connection={connection}
+      networkError={networkError}
+      onDismissNetworkError={onDismissNetworkError}
       onLeave={onLeave}
       gameFactory={gameFactory}
     />;
@@ -507,7 +525,11 @@ function Lobby({ code, room, matchTally, user, connection, roomClient, onJoin, o
     <TopBar user={user} onLogout={onLogout} />
     <div className="center">
       <div className="panel lobby">
-        <h1 className="sr-only">Lobby</h1>
+        <div className="panel-intro lobby-intro">
+          <p className="eyebrow">Private match lobby</p>
+          <h1>Stocking the shelves.</h1>
+          <p>Every connected shopper must mark ready. The host starts the server clock.</p>
+        </div>
         <div className="lobby-head">
           <div>
             <p className="label">Room code</p>
@@ -529,7 +551,7 @@ function Lobby({ code, room, matchTally, user, connection, roomClient, onJoin, o
             <span>{GAME.maxPlayers - room.players.length} open {room.players.length === GAME.maxPlayers - 1 ? 'slot' : 'slots'}</span>
           </li>}
         </ol>
-        {error && <p className="alert" role="alert">{error}</p>}
+        {(error || networkError) && <p className="alert" role="alert">{error ?? networkError}</p>}
         <button
           className="button block"
           type="button"
@@ -570,6 +592,7 @@ function TallyScreen({ room, result, user, onLeave, onLogout }: {
 }) {
   const [leaving, setLeaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => { gameAudio.play('time-up'); }, []);
 
   async function returnHome() {
     setLeaving(true);
@@ -581,7 +604,7 @@ function TallyScreen({ room, result, user, onLeave, onLogout }: {
     <TopBar user={user} onLogout={onLogout} />
     <div className="tally-shell">
       <header className="tally-header">
-        <div><p className="label">Room {room.code}</p><h1>Time’s up</h1></div>
+        <div><p className="eyebrow">Room {room.code} · final server tally</p><h1>Time’s up.</h1><p className="tally-subtitle">Only items banked before the authoritative buzzer count.</p></div>
         {result && <strong aria-label={`${result.totalItems} items deposited in total`}>
           {result.totalItems}<span>items banked</span>
         </strong>}
