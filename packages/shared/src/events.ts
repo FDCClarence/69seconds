@@ -56,6 +56,7 @@ export interface InterServerEvents {
 
 export interface SocketData {
   playerId?: string;
+  playerUsername?: string;
   playerEmail?: string;
   roomCode?: string;
 }

@@ -9,6 +9,7 @@ import type { GroceryGameFactory } from './game/types.js';
 
 const player = {
   id: '477aa564-8b3f-4fa0-bf2c-c523add8d9ce',
+  username: 'cart_goblin',
   email: 'player@example.com',
   createdAt: '2026-09-02T00:00:00.000Z',
 };
@@ -19,7 +20,7 @@ const lobby: RoomPublicState = {
   hostPlayerId: player.id,
   players: [{
     id: player.id,
-    displayName: 'player',
+    displayName: player.username,
     slot: 0,
     isHost: true,
     isReady: false,
@@ -71,76 +72,100 @@ function renderAt(path: string, api: AuthApi, rooms: RoomClient = roomClientStub
   return render(<App api={api} roomClient={rooms} gameFactory={gameFactory} />);
 }
 
+function openAccountMenu() {
+  return userEvent.click(screen.getByRole('button', { name: 'Account menu' }));
+}
+
 afterEach(() => {
   window.history.replaceState({}, '', '/');
 });
 
 describe('authentication application', () => {
-  it('restores a current-user session into the protected home screen', async () => {
+  it('restores a current-user session into the protected room menu', async () => {
     const api = apiStub({ currentUser: vi.fn().mockResolvedValue(player) });
     renderAt('/home', api);
-    expect(await screen.findByRole('heading', { name: 'Ready when your crew is.' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Create room' })).toBeTruthy();
     expect(api.currentUser).toHaveBeenCalledOnce();
     expect(screen.getByText('player@example.com')).toBeTruthy();
   });
 
-  it('sends unauthenticated visitors away from the home screen', async () => {
+  it('sends unauthenticated visitors back to the landing form', async () => {
     renderAt('/home', apiStub());
-    await userEvent.click(await screen.findByRole('button', { name: 'Go to login' }));
-    expect(await screen.findByRole('heading', { name: 'Log in to play' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Log in' })).toBeTruthy();
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
   });
 
   it('validates registration inline and completes the registration flow', async () => {
     const register = vi.fn().mockResolvedValue(player);
-    renderAt('/register', apiStub({ register }));
-    await screen.findByRole('heading', { name: 'Create your player pass' });
-    await userEvent.click(screen.getByRole('button', { name: 'Create player pass' }));
+    renderAt('/', apiStub({ register }));
+    await userEvent.click(await screen.findByRole('tab', { name: 'Register' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create account' }));
+    expect(screen.getByText('Choose a username.')).toBeTruthy();
     expect(screen.getByText('Enter your email address.')).toBeTruthy();
-    expect(screen.getByText('Enter your password.')).toBeTruthy();
-    await userEvent.type(screen.getByLabelText('Email address'), 'player@example.com');
+    expect(screen.getByText('Enter a password.')).toBeTruthy();
+    await userEvent.type(screen.getByLabelText('Username'), 'Cart_Goblin');
+    await userEvent.type(screen.getByLabelText('Email'), 'Player@example.com');
     await userEvent.type(screen.getByLabelText('Password'), 'correct-horse-battery');
-    await userEvent.type(screen.getByLabelText('Confirm password'), 'correct-horse-battery');
-    await userEvent.click(screen.getByRole('button', { name: 'Create player pass' }));
-    await waitFor(() => expect(register).toHaveBeenCalledWith({ email: 'player@example.com', password: 'correct-horse-battery' }));
-    expect((await screen.findByRole('status')).textContent).toContain('Player pass created');
+    await userEvent.click(screen.getByRole('button', { name: 'Create account' }));
+    await waitFor(() => expect(register).toHaveBeenCalledWith({
+      username: 'cart_goblin',
+      email: 'player@example.com',
+      password: 'correct-horse-battery',
+    }));
+    expect(await screen.findByRole('button', { name: 'Create room' })).toBeTruthy();
+  });
+
+  it('logs in with a username or an email address', async () => {
+    const login = vi.fn().mockResolvedValue(player);
+    renderAt('/', apiStub({ login }));
+    await userEvent.type(await screen.findByLabelText('Username or email'), 'Cart_Goblin');
+    await userEvent.type(screen.getByLabelText('Password'), 'correct-horse-battery');
+    await userEvent.click(screen.getByRole('button', { name: 'Log in' }));
+    await waitFor(() => expect(login).toHaveBeenCalledWith({ identifier: 'cart_goblin', password: 'correct-horse-battery' }));
+    await waitFor(() => expect(window.location.pathname).toBe('/home'));
   });
 
   it('presents a stable server error for a failed login', async () => {
-    renderAt('/login', apiStub({ login: vi.fn().mockRejectedValue(new ApiError('INVALID_CREDENTIALS', false, 'Nope')) }));
-    await screen.findByRole('heading', { name: 'Log in to play' });
-    await userEvent.type(screen.getByLabelText('Email address'), 'player@example.com');
+    renderAt('/', apiStub({ login: vi.fn().mockRejectedValue(new ApiError('INVALID_CREDENTIALS', false, 'Nope')) }));
+    await userEvent.type(await screen.findByLabelText('Username or email'), 'player@example.com');
     await userEvent.type(screen.getByLabelText('Password'), 'not-the-right-password');
     fireEvent.submit(screen.getByRole('button', { name: 'Log in' }).closest('form')!);
-    expect((await screen.findByRole('alert')).textContent).toContain('Email or password is incorrect.');
+    expect((await screen.findByRole('alert')).textContent).toContain('Those credentials are incorrect.');
   });
 
-  it('logs out from the authenticated home screen', async () => {
+  it('logs out from the account menu', async () => {
     const logout = vi.fn().mockResolvedValue(undefined);
     renderAt('/home', apiStub({ currentUser: vi.fn().mockResolvedValue(player), logout }));
-    await screen.findByRole('heading', { name: 'Ready when your crew is.' });
-    await userEvent.click(screen.getByRole('button', { name: 'Log out' }));
+    await screen.findByRole('button', { name: 'Create room' });
+    await openAccountMenu();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Log out' }));
     await waitFor(() => expect(logout).toHaveBeenCalledOnce());
-    expect(await screen.findByRole('heading', { name: /seconds to make it count/i })).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: 'Log in' })).toBeTruthy();
   });
 
-  it('creates a private room and renders authoritative lobby status', async () => {
+  it('closes the account menu when the page is clicked elsewhere', async () => {
+    renderAt('/home', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }));
+    await screen.findByRole('button', { name: 'Create room' });
+    await openAccountMenu();
+    expect(screen.getByRole('menuitem', { name: 'Log out' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Create room' }));
+    await waitFor(() => expect(screen.queryByRole('menuitem')).toBeNull());
+  });
+
+  it('creates a private room from the menu and renders authoritative lobby status', async () => {
     const rooms = roomClientStub();
     renderAt('/home', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
-    await userEvent.click(await screen.findByRole('button', { name: /create room/i }));
-    expect(await screen.findByRole('heading', { name: 'Create a room.' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Generate room code' }));
-    expect(await screen.findByRole('heading', { name: 'Crew at the carts.' })).toBeTruthy();
-    expect(screen.getByText('ABC234')).toBeTruthy();
+    await userEvent.click(await screen.findByRole('button', { name: 'Create room' }));
+    expect(await screen.findByText('ABC234')).toBeTruthy();
+    expect(screen.getByText('cart_goblin (you)')).toBeTruthy();
     expect(screen.getByText('Host')).toBeTruthy();
-    expect(screen.getByText('Connected')).toBeTruthy();
     expect(rooms.createRoom).toHaveBeenCalledOnce();
   });
 
   it('validates join codes before sending a join command', async () => {
     const rooms = roomClientStub();
-    renderAt('/room/join', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
-    const code = await screen.findByLabelText('Room code');
-    await userEvent.type(code, 'OOPS');
+    renderAt('/home', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
+    await userEvent.type(await screen.findByLabelText('Room code'), 'OOPS');
     await userEvent.click(screen.getByRole('button', { name: 'Join room' }));
     expect((await screen.findByRole('alert')).textContent).toContain('six-character room code');
     expect(rooms.joinRoom).not.toHaveBeenCalled();
@@ -162,9 +187,9 @@ describe('authentication application', () => {
       startMatch: vi.fn().mockResolvedValue(startedLobby),
     });
     renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
-    await screen.findByRole('heading', { name: 'Crew at the carts.' });
+    await screen.findByText('ABC234');
     expect((screen.getByRole('button', { name: 'Start match' }) as HTMLButtonElement).disabled).toBe(true);
-    await userEvent.click(screen.getByRole('button', { name: 'I’m ready' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Ready' }));
     await waitFor(() => expect((screen.getByRole('button', { name: 'Start match' }) as HTMLButtonElement).disabled).toBe(false));
     await userEvent.click(screen.getByRole('button', { name: 'Start match' }));
     expect(await screen.findByRole('application', { name: /grocery store prototype/i })).toBeTruthy();
@@ -184,6 +209,6 @@ describe('authentication application', () => {
     await screen.findByRole('application', { name: /grocery store prototype/i });
     await userEvent.click(screen.getByRole('button', { name: 'Leave test' }));
     await waitFor(() => expect(destroy).toHaveBeenCalledWith(true));
-    expect(await screen.findByRole('heading', { name: 'Ready when your crew is.' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Create room' })).toBeTruthy();
   });
 });

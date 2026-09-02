@@ -9,6 +9,7 @@ import type { UserRow } from './db/schema.js';
 export function toPublicUser(user: UserRow): PublicUser {
   return {
     id: user.id,
+    username: user.username,
     email: user.email,
     createdAt: user.createdAt.toISOString(),
   };

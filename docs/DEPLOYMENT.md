@@ -186,7 +186,7 @@ Two browser profiles are enough to exercise rooms end to end.
 | `ECONNREFUSED` or DNS failure to `*.railway.internal` | Private networking is only reachable from services in the same project and environment. If you are running migrations locally, you need `MYSQL_PUBLIC_URL`. |
 | Rooms disappear for everyone at once | Expected. Rooms are in-memory and every redeploy clears them. If it happens without a deploy, check that replicas is still 1. |
 | Pages build fails on `engines` | `NODE_VERSION` is unset or too low. Set it to `22` in the Pages environment variables and retry the deployment. |
-| Registering an existing email returns 500, not 409 | The duplicate-key path is matched on MySQL's `ER_DUP_ENTRY`. A 500 means a different driver is in play — verify the deploy built the current `mysql2` code. |
+| Registering an existing email or username returns 500, not 409 | The duplicate-key path is matched on MySQL's `ER_DUP_ENTRY`. A 500 means a different driver is in play — verify the deploy built the current `mysql2` code. |
 
 ## Appendix — running MySQL locally
 

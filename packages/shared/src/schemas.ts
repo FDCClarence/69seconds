@@ -85,6 +85,7 @@ export const serverErrorCodeSchema = z.enum([
   'INVALID_PAYLOAD',
   'UNAUTHENTICATED',
   'EMAIL_ALREADY_REGISTERED',
+  'USERNAME_ALREADY_TAKEN',
   'INVALID_CREDENTIALS',
   'FORBIDDEN',
   'ROOM_NOT_FOUND',
@@ -125,13 +126,18 @@ export const emailSchema = z.string().trim().toLowerCase().email().max(254);
 
 export const passwordSchema = z.string().min(12).max(128);
 
+// Usernames are lowercased on the way in so uniqueness never depends on the database collation.
+export const usernameSchema = z.string().trim().toLowerCase().min(3).max(24).regex(/^[a-z0-9_]+$/);
+
 export const registerRequestSchema = z.strictObject({
+  username: usernameSchema,
   email: emailSchema,
   password: passwordSchema,
 });
 
+// Login accepts either the username or the email address in a single field.
 export const loginRequestSchema = z.strictObject({
-  email: emailSchema,
+  identifier: z.string().trim().toLowerCase().min(1).max(254),
   password: z.string().min(1).max(128),
 });
 
@@ -139,6 +145,7 @@ export const logoutRequestSchema = z.strictObject({});
 
 export const publicUserSchema = z.object({
   id: z.string().uuid(),
+  username: usernameSchema,
   email: emailSchema,
   createdAt: z.string().datetime(),
 });

@@ -1,5 +1,5 @@
 import { GAME, roomCodeSchema, type PublicUser, type RoomPublicState } from '@69-seconds/shared';
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { authApi, ApiError, type AuthApi } from './api.js';
 import { MatchGame } from './game/react/MatchGame.js';
 import type { GroceryGameFactory } from './game/types.js';
@@ -10,8 +10,7 @@ import {
   type SocketConnectionState,
 } from './room-client.js';
 
-type StaticRoute = '/' | '/login' | '/register' | '/home' | '/room/create' | '/room/join';
-type Route = StaticRoute | `/room/${string}`;
+type Route = '/' | '/home' | `/room/${string}`;
 type AuthState = { status: 'loading' } | { status: 'anonymous' } | { status: 'authenticated'; user: PublicUser };
 type FormMode = 'login' | 'register';
 
@@ -22,54 +21,59 @@ export interface AppProps {
 }
 
 function routeFromPath(pathname: string): Route {
-  if (pathname === '/login' || pathname === '/register' || pathname === '/home') return pathname;
-  if (pathname === '/room/create' || pathname === '/room/join') return pathname;
+  if (pathname === '/home') return '/home';
   const lobby = /^\/room\/([A-HJ-KM-NP-Z2-9]{6})$/i.exec(pathname);
   if (lobby?.[1]) return `/room/${lobby[1].toUpperCase()}`;
   return '/';
 }
 
 function lobbyCode(route: Route): string | null {
-  if (!route.startsWith('/room/') || route === '/room/create' || route === '/room/join') return null;
-  return route.slice('/room/'.length);
+  return route.startsWith('/room/') ? route.slice('/room/'.length) : null;
 }
 
-function fieldErrors(mode: FormMode, email: string, password: string, confirmPassword: string) {
+function fieldErrors(mode: FormMode, values: { username: string; email: string; identifier: string; password: string }) {
   const errors: Record<string, string> = {};
-  if (!email.trim()) errors.email = 'Enter your email address.';
-  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) errors.email = 'Enter a valid email address.';
-  if (!password) errors.password = 'Enter your password.';
-  else if (mode === 'register' && password.length < 12) errors.password = 'Use at least 12 characters.';
-  if (mode === 'register' && password !== confirmPassword) errors.confirmPassword = 'Passwords do not match.';
+  if (mode === 'register') {
+    if (!values.username.trim()) errors.username = 'Choose a username.';
+    else if (!/^[a-zA-Z0-9_]{3,24}$/.test(values.username.trim())) errors.username = 'Use 3–24 letters, numbers, or underscores.';
+    if (!values.email.trim()) errors.email = 'Enter your email address.';
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(values.email.trim())) errors.email = 'Enter a valid email address.';
+    if (!values.password) errors.password = 'Enter a password.';
+    else if (values.password.length < 12) errors.password = 'Use at least 12 characters.';
+    return errors;
+  }
+  if (!values.identifier.trim()) errors.identifier = 'Enter your username or email.';
+  if (!values.password) errors.password = 'Enter your password.';
   return errors;
 }
 
 function authErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
-    if (error.code === 'EMAIL_ALREADY_REGISTERED') return 'That email already has a player record. Try logging in instead.';
-    if (error.code === 'INVALID_CREDENTIALS') return 'Email or password is incorrect.';
-    if (error.code === 'RATE_LIMITED') return 'Too many attempts. Please wait a moment, then try again.';
-    if (error.code === 'INVALID_PAYLOAD') return 'Please check the highlighted details and try again.';
+    if (error.code === 'EMAIL_ALREADY_REGISTERED') return 'That email is already registered.';
+    if (error.code === 'USERNAME_ALREADY_TAKEN') return 'That username is already taken.';
+    if (error.code === 'INVALID_CREDENTIALS') return 'Those credentials are incorrect.';
+    if (error.code === 'RATE_LIMITED') return 'Too many attempts. Wait a moment, then try again.';
+    if (error.code === 'INVALID_PAYLOAD') return 'Check the highlighted details and try again.';
   }
-  return 'The signal dropped before we could finish. Please try again.';
+  return 'Something went wrong. Please try again.';
 }
 
 function roomErrorMessage(error: unknown): string {
   if (error instanceof RoomClientError) {
     const messages: Partial<Record<RoomClientError['code'], string>> = {
-      UNAUTHENTICATED: 'Your player session expired. Log in again to enter a room.',
+      UNAUTHENTICATED: 'Your session expired. Log in again.',
       ROOM_NOT_FOUND: 'No open room matches that code.',
-      ROOM_FULL: 'That room already has four players.',
-      MATCH_ALREADY_STARTED: 'That crew has already started its run.',
-      ALREADY_IN_ROOM: 'Leave your current room before entering another.',
+      ROOM_FULL: 'That room is full.',
+      MATCH_ALREADY_STARTED: 'That match has already started.',
+      ALREADY_IN_ROOM: 'Leave your current room first.',
       NOT_IN_ROOM: 'You are no longer in this room.',
-      PLAYERS_NOT_READY: 'Every player must be connected and ready before the host can start.',
-      FORBIDDEN: 'Only the current host can start the match.',
+      PLAYERS_NOT_READY: 'Everyone must be connected and ready.',
+      FORBIDDEN: 'Only the host can start the match.',
       INVALID_PAYLOAD: 'Check the room code and try again.',
     };
     return messages[error.code] ?? error.message;
   }
-  return 'The room signal dropped. Please try again.';
+  return 'The room connection dropped. Please try again.';
 }
 
 export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory }: AppProps) {
@@ -113,22 +117,21 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
     onError: (error) => setNotice(roomErrorMessage(error)),
     onClosed: () => {
       setRoom(null);
-      setNotice('That room closed after everyone left.');
       window.history.replaceState({}, '', '/home');
       setRoute('/home');
+      setNotice('That room closed after everyone left.');
     },
   }), [rooms]);
   useEffect(() => {
     if (auth.status === 'authenticated') rooms.connect();
     else rooms.disconnect();
   }, [auth.status, rooms]);
-
-  const completeAuthentication = useCallback((user: PublicUser, message: string) => {
-    setAuth({ status: 'authenticated', user });
-    setNotice(message);
-    window.history.replaceState({}, '', '/home');
-    setRoute('/home');
-  }, []);
+  // The rendered screen follows the session, so the address bar is corrected to match it.
+  useEffect(() => {
+    if (auth.status === 'loading') return;
+    if (auth.status === 'anonymous' && route !== '/') navigate('/', true);
+    if (auth.status === 'authenticated' && route === '/') navigate('/home', true);
+  }, [auth.status, navigate, route]);
 
   const logout = useCallback(async () => {
     if (room) await rooms.leaveRoom().catch(() => undefined);
@@ -136,7 +139,6 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
     setRoom(null);
     await api.logout();
     setAuth({ status: 'anonymous' });
-    setNotice('You are safely out of the store.');
     window.history.replaceState({}, '', '/');
     setRoute('/');
   }, [api, room, rooms]);
@@ -160,159 +162,281 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
   }, [navigate, rooms]);
 
   if (auth.status === 'loading') return <SessionGate />;
-  const protectedRoute = route === '/home' || route.startsWith('/room/');
-  if (protectedRoute && auth.status === 'anonymous') {
-    return <AuthRequired onLogin={() => navigate('/login', true)} />;
-  }
-  if (auth.status === 'authenticated') {
-    if (route === '/home') {
-      return <Home
-        user={auth.user}
-        notice={notice}
-        onLogout={logout}
-        onCreate={() => navigate('/room/create')}
-        onJoin={() => navigate('/room/join')}
-      />;
-    }
-    if (route === '/room/create') {
-      return <CreateRoom onCreate={createRoom} onBack={() => navigate('/home')} />;
-    }
-    if (route === '/room/join') {
-      return <JoinRoom onJoin={joinRoom} onBack={() => navigate('/home')} />;
-    }
-    const code = lobbyCode(route);
-    if (code) {
-      return <Lobby
-        code={code}
-        room={room?.code === code ? room : null}
-        user={auth.user}
-        connection={connection}
-        onJoin={joinRoom}
-        onReady={async (ready) => { setRoom(await rooms.setReady(ready)); }}
-        onStart={async () => { setRoom(await rooms.startMatch()); }}
-        onLeave={leaveRoom}
-        onBack={() => navigate('/home')}
-        gameFactory={gameFactory}
-      />;
-    }
-  }
-  if (route === '/login' || route === '/register') {
-    return <AuthScreen
-      mode={route === '/login' ? 'login' : 'register'}
+  if (auth.status === 'anonymous') {
+    return <AuthLanding
       api={api}
-      onAuthenticated={completeAuthentication}
-      onNavigate={navigate}
+      restoreError={restoreError}
+      onRetry={() => void restoreSession()}
+      onAuthenticated={(user) => {
+        setAuth({ status: 'authenticated', user });
+        navigate('/home', true);
+      }}
     />;
   }
-  return <Landing
-    onLogin={() => navigate('/login')}
-    onRegister={() => navigate('/register')}
-    restoreError={restoreError}
-    onRetry={() => void restoreSession()}
-  />;
-}
 
-function BrandMark() {
-  return <a className="brand" href="/" aria-label="69 Seconds home"><span aria-hidden="true" className="brand-mark">69</span><span>SECONDS</span></a>;
+  const code = lobbyCode(route);
+  if (code) {
+    return <Lobby
+      code={code}
+      room={room?.code === code ? room : null}
+      user={auth.user}
+      connection={connection}
+      onJoin={joinRoom}
+      onReady={async (ready) => { setRoom(await rooms.setReady(ready)); }}
+      onStart={async () => { setRoom(await rooms.startMatch()); }}
+      onLeave={leaveRoom}
+      onLogout={logout}
+      gameFactory={gameFactory}
+    />;
+  }
+  return <Home user={auth.user} notice={notice} onLogout={logout} onCreate={createRoom} onJoin={joinRoom} />;
 }
 
 function SessionGate() {
-  return <main className="session-gate" aria-live="polite" aria-busy="true"><div className="signal-loader" aria-hidden="true"><span /><span /><span /></div><p>Checking the checkout clock…</p></main>;
+  return <main className="gate" aria-live="polite" aria-busy="true"><p>Loading…</p></main>;
 }
 
-function AuthRequired({ onLogin }: { onLogin: () => void }) {
-  return <main className="session-gate" aria-live="polite"><p>You need a player pass to enter the stockroom.</p><button className="button button-primary" type="button" onClick={onLogin}>Go to login</button></main>;
+function Brand() {
+  return <span className="brand">69<span>SECONDS</span></span>;
 }
 
-function Landing({ onLogin, onRegister, restoreError, onRetry }: { onLogin: () => void; onRegister: () => void; restoreError: string | null; onRetry: () => void }) {
-  return <main className="landing-shell"><header className="topbar"><BrandMark /><p className="topbar-note">Private grocery-store scramble</p></header><section className="hero" aria-labelledby="landing-title"><div className="hero-copy"><p className="kicker">One cart. One chance.</p><h1 id="landing-title"><span>69</span> seconds<br />to make it count.</h1><p className="hero-description">Gather the good stuff, beat the bell, and make your cart proud. Bring up to three co-conspirators when the store opens.</p>{restoreError && <div className="notice notice-error" role="alert"><span>{restoreError}</span><button type="button" onClick={onRetry}>Try again</button></div>}<div className="hero-actions"><button className="button button-primary" type="button" onClick={onRegister}>Make a player pass <span aria-hidden="true">→</span></button><button className="button button-quiet" type="button" onClick={onLogin}>I already have one</button></div></div><ClockIllustration /></section><section className="rules-strip" aria-label="How 69 Seconds works"><div><strong>01</strong><span>Form a private crew</span></div><div><strong>02</strong><span>Fill your own cart</span></div><div><strong>03</strong><span>Beat the closing bell</span></div></section></main>;
-}
-
-function ClockIllustration() {
-  return <div className="clock-scene" aria-hidden="true"><div className="scene-ticket">AISLE<br /><b>69</b></div><div className="scene-clock"><i /><i /><i /><i /><div className="clock-hands"><span /><span /></div><strong>GO</strong></div><div className="scene-cart"><span className="cart-basket" /><i /><i /></div><div className="scene-spark spark-one" /><div className="scene-spark spark-two" /><div className="scene-spark spark-three" /></div>;
-}
-
-function AuthScreen({ mode, api, onAuthenticated, onNavigate }: { mode: FormMode; api: AuthApi; onAuthenticated: (user: PublicUser, message: string) => void; onNavigate: (route: Route) => void }) {
-  const isRegister = mode === 'register';
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [touched, setTouched] = useState<Record<string, boolean>>({});
-  const [serverError, setServerError] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const errors = useMemo(() => fieldErrors(mode, email, password, confirmPassword), [confirmPassword, email, mode, password]);
-  const showError = (name: string) => touched[name] ? errors[name] : undefined;
-  const markTouched = (name: string) => setTouched((current) => ({ ...current, [name]: true }));
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setTouched(isRegister ? { email: true, password: true, confirmPassword: true } : { email: true, password: true });
-    setServerError(null);
-    if (Object.keys(errors).length > 0) return;
-    setIsSubmitting(true);
-    try {
-      const user = isRegister
-        ? await api.register({ email: email.trim(), password })
-        : await api.login({ email: email.trim(), password });
-      onAuthenticated(user, isRegister ? 'Player pass created. The aisles are yours.' : 'Welcome back. Your cart is waiting.');
-    } catch (error) {
-      setServerError(authErrorMessage(error));
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  return <main className="auth-shell"><header className="topbar"><BrandMark /><button className="text-button" type="button" onClick={() => onNavigate('/')}>Back to briefing</button></header><section className="auth-layout" aria-labelledby="auth-title"><aside className="auth-aside"><p className="kicker">{isRegister ? 'Fresh pass, fresh start' : 'Your cart is still here'}</p><h1>{isRegister ? 'Claim your countdown.' : 'Step back into the rush.'}</h1><p>The store only opens for a moment. Your session stays private and returns when you do.</p><div className="auth-aside-number" aria-hidden="true">69</div></aside><div className="auth-card"><p className="form-overline">Player access</p><h2 id="auth-title">{isRegister ? 'Create your player pass' : 'Log in to play'}</h2><p className="form-intro">{isRegister ? 'Use an email you can remember. No marketing maze, no social accounts.' : 'Use the email and password attached to your player pass.'}</p>{serverError && <div className="notice notice-error" role="alert">{serverError}</div>}<form noValidate onSubmit={(event) => void submit(event)}><fieldset disabled={isSubmitting}><Field label="Email address" id="email" type="email" value={email} onChange={setEmail} onBlur={() => markTouched('email')} error={showError('email')} autoComplete="email" /><Field label="Password" id="password" type="password" value={password} onChange={setPassword} onBlur={() => markTouched('password')} error={showError('password')} autoComplete={isRegister ? 'new-password' : 'current-password'} hint={isRegister ? 'At least 12 characters.' : undefined} />{isRegister && <Field label="Confirm password" id="confirm-password" type="password" value={confirmPassword} onChange={setConfirmPassword} onBlur={() => markTouched('confirmPassword')} error={showError('confirmPassword')} autoComplete="new-password" />}</fieldset><button className="button button-primary form-submit" type="submit" disabled={isSubmitting}>{isSubmitting ? (isRegister ? 'Creating your pass…' : 'Opening the gate…') : (isRegister ? 'Create player pass' : 'Log in')} <span aria-hidden="true">→</span></button></form><p className="switch-auth">{isRegister ? 'Already on the roster?' : 'New around here?'} <button type="button" onClick={() => onNavigate(isRegister ? '/login' : '/register')}>{isRegister ? 'Log in' : 'Create a player pass'}</button></p></div></section></main>;
-}
-
-function Field({ label, id, type, value, onChange, onBlur, error, autoComplete, hint }: { label: string; id: string; type: 'email' | 'password'; value: string; onChange: (value: string) => void; onBlur: () => void; error?: string | undefined; autoComplete: string; hint?: string | undefined }) {
-  const messageId = `${id}-message`;
-  return <div className="field"><label htmlFor={id}>{label}</label><input id={id} name={id} type={type} value={value} autoComplete={autoComplete} onChange={(event) => onChange(event.target.value)} onBlur={onBlur} aria-invalid={Boolean(error)} aria-describedby={error || hint ? messageId : undefined} required />{(error || hint) && <p className={error ? 'field-error' : 'field-hint'} id={messageId}>{error ?? hint}</p>}</div>;
-}
-
-function Home({ user, notice, onLogout, onCreate, onJoin }: { user: PublicUser; notice: string | null; onLogout: () => Promise<void>; onCreate: () => void; onJoin: () => void }) {
+function TopBar({ user, onLogout }: { user: PublicUser; onLogout: () => Promise<void> }) {
+  const [open, setOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  async function handleLogout() {
+  const container = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!container.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  async function logout() {
     setLeaving(true);
     try { await onLogout(); } finally { setLeaving(false); }
   }
-  return <main className="home-shell"><header className="topbar"><BrandMark /><div className="player-menu"><span title={user.email}>Signed in</span><button className="text-button" type="button" disabled={leaving} onClick={() => void handleLogout()}>{leaving ? 'Leaving…' : 'Log out'}</button></div></header><section className="home-hero" aria-labelledby="home-title"><p className="kicker">The bell has not rung yet</p><h1 id="home-title">Ready when your crew is.</h1><p>Build a private grocery scramble for one to {GAME.maxPlayers} players. You’ll get a room code to share before the countdown begins.</p>{notice && <p className="notice notice-success" role="status">{notice}</p>}</section><section className="room-actions" aria-label="Room actions"><button type="button" className="room-action create" onClick={onCreate}><span className="action-number">01</span><strong>Create room</strong><span>Start a private crew and get a shareable code.</span><b aria-hidden="true">+</b></button><button type="button" className="room-action join" onClick={onJoin}><span className="action-number">02</span><strong>Join room</strong><span>Enter a friend’s code and meet them at the carts.</span><b aria-hidden="true">→</b></button></section><footer className="home-footer"><span>Player pass: <b>{user.email}</b></span><span>69 seconds. No extensions.</span></footer></main>;
+
+  return <header className="topbar">
+    <Brand />
+    <div className="account" ref={container}>
+      <button
+        type="button"
+        className="account-toggle"
+        aria-label="Account menu"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="avatar" aria-hidden="true">{user.username.slice(0, 1).toUpperCase()}</span>
+        <span className="account-email">{user.email}</span>
+        <span className="chevron" aria-hidden="true" />
+      </button>
+      {open && <div className="account-menu" role="menu">
+        <button type="button" role="menuitem" disabled={leaving} onClick={() => void logout()}>
+          {leaving ? 'Logging out…' : 'Log out'}
+        </button>
+      </div>}
+    </div>
+  </header>;
 }
 
-function RoomShell({ children, onBack }: { children: React.ReactNode; onBack: () => void }) {
-  return <main className="room-shell"><header className="topbar"><BrandMark /><button className="text-button" type="button" onClick={onBack}>Back to home</button></header>{children}</main>;
+function AuthLanding({ api, restoreError, onRetry, onAuthenticated }: {
+  api: AuthApi;
+  restoreError: string | null;
+  onRetry: () => void;
+  onAuthenticated: (user: PublicUser) => void;
+}) {
+  const [mode, setMode] = useState<FormMode>('login');
+  const [identifier, setIdentifier] = useState('');
+  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const isRegister = mode === 'register';
+  const errors = useMemo(
+    () => fieldErrors(mode, { username, email, identifier, password }),
+    [email, identifier, mode, password, username],
+  );
+
+  function switchMode(next: FormMode) {
+    setMode(next);
+    setTouched({});
+    setServerError(null);
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setTouched(isRegister ? { username: true, email: true, password: true } : { identifier: true, password: true });
+    setServerError(null);
+    if (Object.keys(errors).length > 0) return;
+    setSubmitting(true);
+    try {
+      const user = isRegister
+        ? await api.register({ username: username.trim().toLowerCase(), email: email.trim().toLowerCase(), password })
+        : await api.login({ identifier: identifier.trim().toLowerCase(), password });
+      onAuthenticated(user);
+    } catch (error) {
+      setServerError(authErrorMessage(error));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const showError = (name: string) => touched[name] ? errors[name] : undefined;
+  const markTouched = (name: string) => setTouched((current) => ({ ...current, [name]: true }));
+
+  return <main className="page">
+    <header className="topbar"><Brand /></header>
+    <div className="center">
+      <div className="panel">
+        <h1 className="sr-only">Log in or register</h1>
+        <div className="tabs" role="tablist" aria-label="Account access">
+          <button type="button" role="tab" aria-selected={!isRegister} onClick={() => switchMode('login')}>Log in</button>
+          <button type="button" role="tab" aria-selected={isRegister} onClick={() => switchMode('register')}>Register</button>
+        </div>
+        {restoreError && <p className="alert" role="alert">
+          {restoreError} <button type="button" className="link" onClick={onRetry}>Retry</button>
+        </p>}
+        {serverError && <p className="alert" role="alert">{serverError}</p>}
+        <form noValidate onSubmit={(event) => void submit(event)}>
+          <fieldset disabled={submitting}>
+            {isRegister ? <>
+              <Field label="Username" id="username" type="text" value={username} onChange={setUsername}
+                onBlur={() => markTouched('username')} error={showError('username')} autoComplete="username" />
+              <Field label="Email" id="email" type="email" value={email} onChange={setEmail}
+                onBlur={() => markTouched('email')} error={showError('email')} autoComplete="email" />
+              <Field label="Password" id="password" type="password" value={password} onChange={setPassword}
+                onBlur={() => markTouched('password')} error={showError('password')} autoComplete="new-password"
+                hint="At least 12 characters." />
+            </> : <>
+              <Field label="Username or email" id="identifier" type="text" value={identifier} onChange={setIdentifier}
+                onBlur={() => markTouched('identifier')} error={showError('identifier')} autoComplete="username" />
+              <Field label="Password" id="password" type="password" value={password} onChange={setPassword}
+                onBlur={() => markTouched('password')} error={showError('password')} autoComplete="current-password" />
+            </>}
+          </fieldset>
+          <button className="button primary block" type="submit" disabled={submitting}>
+            {isRegister ? (submitting ? 'Creating account…' : 'Create account') : (submitting ? 'Logging in…' : 'Log in')}
+          </button>
+        </form>
+      </div>
+    </div>
+  </main>;
 }
 
-function CreateRoom({ onCreate, onBack }: { onCreate: () => Promise<void>; onBack: () => void }) {
+function Field({ label, id, type, value, onChange, onBlur, error, autoComplete, hint }: {
+  label: string;
+  id: string;
+  type: 'text' | 'email' | 'password';
+  value: string;
+  onChange: (value: string) => void;
+  onBlur: () => void;
+  error?: string | undefined;
+  autoComplete: string;
+  hint?: string | undefined;
+}) {
+  const messageId = `${id}-message`;
+  return <div className="field">
+    <label htmlFor={id}>{label}</label>
+    <input
+      id={id}
+      name={id}
+      type={type}
+      value={value}
+      autoComplete={autoComplete}
+      onChange={(event) => onChange(event.target.value)}
+      onBlur={onBlur}
+      aria-invalid={Boolean(error)}
+      aria-describedby={error || hint ? messageId : undefined}
+      required
+    />
+    {(error || hint) && <p className={error ? 'field-error' : 'field-hint'} id={messageId}>{error ?? hint}</p>}
+  </div>;
+}
+
+function Home({ user, notice, onLogout, onCreate, onJoin }: {
+  user: PublicUser;
+  notice: string | null;
+  onLogout: () => Promise<void>;
+  onCreate: () => Promise<void>;
+  onJoin: (code: string) => Promise<void>;
+}) {
+  const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
   async function create() {
     setBusy(true);
     setError(null);
     try { await onCreate(); } catch (cause) { setError(roomErrorMessage(cause)); } finally { setBusy(false); }
   }
-  return <RoomShell onBack={onBack}><section className="room-card room-entry" aria-labelledby="create-room-title"><p className="kicker">New private crew</p><h1 id="create-room-title">Create a room.</h1><p>We’ll generate a six-character code without easily confused letters or numbers. Share it only with the players you want in your crew.</p>{error && <p className="notice notice-error" role="alert">{error}</p>}<button className="button button-primary" type="button" disabled={busy} onClick={() => void create()}>{busy ? 'Opening room…' : 'Generate room code'}</button></section></RoomShell>;
-}
 
-function JoinRoom({ onJoin, onBack }: { onJoin: (code: string) => Promise<void>; onBack: () => void }) {
-  const [code, setCode] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  async function submit(event: FormEvent) {
+  async function join(event: FormEvent) {
     event.preventDefault();
     const parsed = roomCodeSchema.safeParse(code);
     if (!parsed.success) {
-      setError('Enter the six-character room code. Codes do not use 0, 1, I, L, or O.');
+      setError('Enter the six-character room code.');
       return;
     }
     setBusy(true);
     setError(null);
     try { await onJoin(parsed.data); } catch (cause) { setError(roomErrorMessage(cause)); } finally { setBusy(false); }
   }
-  return <RoomShell onBack={onBack}><section className="room-card room-entry" aria-labelledby="join-room-title"><p className="kicker">Find your crew</p><h1 id="join-room-title">Join by code.</h1><form onSubmit={(event) => void submit(event)}><label htmlFor="room-code">Room code</label><input id="room-code" className="room-code-input" value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} maxLength={GAME.roomCodeLength} autoComplete="off" autoCapitalize="characters" spellCheck={false} />{error && <p className="notice notice-error" role="alert">{error}</p>}<button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Finding room…' : 'Join room'}</button></form></section></RoomShell>;
+
+  return <main className="page">
+    <TopBar user={user} onLogout={onLogout} />
+    <div className="center">
+      <div className="panel menu">
+        <h1 className="sr-only">Room menu</h1>
+        {notice && <p className="notice" role="status">{notice}</p>}
+        <button className="button primary block" type="button" disabled={busy} onClick={() => void create()}>
+          {busy ? 'Working…' : 'Create room'}
+        </button>
+        <p className="divider"><span>or</span></p>
+        <form onSubmit={(event) => void join(event)}>
+          <div className="field">
+            <label htmlFor="room-code">Room code</label>
+            <input
+              id="room-code"
+              className="code-input"
+              value={code}
+              onChange={(event) => setCode(event.target.value.toUpperCase())}
+              maxLength={GAME.roomCodeLength}
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+            />
+          </div>
+          <button className="button block" type="submit" disabled={busy}>Join room</button>
+        </form>
+        {error && <p className="alert" role="alert">{error}</p>}
+      </div>
+    </div>
+  </main>;
 }
 
-function Lobby({ code, room, user, connection, onJoin, onReady, onStart, onLeave, onBack, gameFactory }: { code: string; room: RoomPublicState | null; user: PublicUser; connection: SocketConnectionState; onJoin: (code: string) => Promise<void>; onReady: (ready: boolean) => Promise<void>; onStart: () => Promise<void>; onLeave: () => Promise<void>; onBack: () => void; gameFactory: GroceryGameFactory | undefined }) {
+function Lobby({ code, room, user, connection, onJoin, onReady, onStart, onLeave, onLogout, gameFactory }: {
+  code: string;
+  room: RoomPublicState | null;
+  user: PublicUser;
+  connection: SocketConnectionState;
+  onJoin: (code: string) => Promise<void>;
+  onReady: (ready: boolean) => Promise<void>;
+  onStart: () => Promise<void>;
+  onLeave: () => Promise<void>;
+  onLogout: () => Promise<void>;
+  gameFactory: GroceryGameFactory | undefined;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -329,15 +453,71 @@ function Lobby({ code, room, user, connection, onJoin, onReady, onStart, onLeave
   }
 
   if (!room) {
-    return <RoomShell onBack={onBack}><section className="room-card room-entry" aria-live="polite"><p className="kicker">Room {code}</p><h1>{error ? 'Could not enter.' : 'Connecting to crew…'}</h1>{error && <p className="notice notice-error" role="alert">{error}</p>}</section></RoomShell>;
+    return <main className="page">
+      <TopBar user={user} onLogout={onLogout} />
+      <div className="center">
+        <div className="panel" aria-live="polite">
+          <h1 className="sr-only">Lobby</h1>
+          <p className="label">Room {code}</p>
+          {error ? <p className="alert" role="alert">{error}</p> : <p>Connecting…</p>}
+        </div>
+      </div>
+    </main>;
+  }
+
+  if (room.phase !== 'LOBBY') {
+    return <MatchGame phase={room.phase} roomCode={room.code} onLeave={onLeave} gameFactory={gameFactory} />;
   }
 
   const self = room.players.find((player) => player.id === user.id);
   const isHost = room.hostPlayerId === user.id;
   const canStart = room.players.every((player) => player.isConnected && player.isReady);
-  const lobbyOpen = room.phase === 'LOBBY';
-  if (!lobbyOpen) {
-    return <MatchGame phase={room.phase} roomCode={room.code} onLeave={onLeave} gameFactory={gameFactory} />;
-  }
-  return <main className="room-shell lobby-shell"><header className="topbar"><BrandMark /><div className={`socket-status status-${connection.toLowerCase()}`}><span aria-hidden="true" />{connection === 'CONNECTED' ? 'Live' : connection.toLowerCase()}</div></header><section className="lobby-heading"><div><p className="kicker">Private room</p><h1>Crew at the carts.</h1></div><div className="room-code-display"><span>Room code</span><strong>{room.code}</strong></div></section>{error && <p className="notice notice-error lobby-error" role="alert">{error}</p>}<section className="lobby-grid"><div className="roster-panel"><div className="panel-heading"><h2>Players</h2><span>{room.players.length} / {GAME.maxPlayers}</span></div><ol className="player-roster">{room.players.map((player) => <li key={player.id} className={!player.isConnected ? 'player-reconnecting' : ''}><span className="player-slot">{player.slot + 1}</span><span className="player-name"><strong>{player.displayName}{player.id === user.id ? ' (you)' : ''}</strong><small>{player.isHost ? 'Host' : 'Crew member'}</small></span><span className={`connection-pill ${player.connectionState.toLowerCase()}`}>{player.connectionState === 'CONNECTED' ? 'Connected' : 'Reconnecting'}</span><span className={`ready-pill ${player.isReady ? 'is-ready' : ''}`}>{player.isReady ? 'Ready' : 'Not ready'}</span></li>)}</ol></div><aside className="lobby-controls"><p className="form-overline">Start rule</p><h2>Everyone checks in.</h2><p>Every rostered player—including the host—must be connected and ready. Only the current host can start.</p>{lobbyOpen ? <><button className={`button ${self?.isReady ? 'button-quiet' : 'button-primary'}`} type="button" disabled={busy || connection !== 'CONNECTED'} onClick={() => void act(() => onReady(!self?.isReady))}>{self?.isReady ? 'Mark not ready' : 'I’m ready'}</button>{isHost && <button className="button start-button" type="button" disabled={busy || !canStart || connection !== 'CONNECTED'} onClick={() => void act(onStart)}>Start match</button>}</> : <div className="match-started" role="status"><strong>Match started.</strong><span>The roster is locked and the countdown is server-owned.</span></div>}<button className="text-button leave-room" type="button" disabled={busy} onClick={() => void act(onLeave)}>Leave room</button></aside></section></main>;
+
+  return <main className="page">
+    <TopBar user={user} onLogout={onLogout} />
+    <div className="center">
+      <div className="panel lobby">
+        <h1 className="sr-only">Lobby</h1>
+        <div className="lobby-head">
+          <div>
+            <p className="label">Room code</p>
+            <strong className="code">{room.code}</strong>
+          </div>
+          <span className={`status status-${connection.toLowerCase()}`}>
+            {connection === 'CONNECTED' ? 'Live' : 'Offline'}
+          </span>
+        </div>
+        <ol className="players">
+          {room.players.map((player) => <li key={player.id}>
+            <span className="player-name">{player.displayName}{player.id === user.id ? ' (you)' : ''}</span>
+            {player.isHost && <span className="tag">Host</span>}
+            <span className={`state ${player.isReady ? 'is-ready' : ''}`}>
+              {!player.isConnected ? 'Reconnecting' : player.isReady ? 'Ready' : 'Not ready'}
+            </span>
+          </li>)}
+          {room.players.length < GAME.maxPlayers && <li className="empty-slot">
+            <span>{GAME.maxPlayers - room.players.length} open {room.players.length === GAME.maxPlayers - 1 ? 'slot' : 'slots'}</span>
+          </li>}
+        </ol>
+        {error && <p className="alert" role="alert">{error}</p>}
+        <button
+          className="button block"
+          type="button"
+          disabled={busy || connection !== 'CONNECTED'}
+          onClick={() => void act(() => onReady(!self?.isReady))}
+        >
+          {self?.isReady ? 'Not ready' : 'Ready'}
+        </button>
+        {isHost && <button
+          className="button primary block"
+          type="button"
+          disabled={busy || !canStart || connection !== 'CONNECTED'}
+          onClick={() => void act(onStart)}
+        >
+          Start match
+        </button>}
+        <button className="link leave" type="button" disabled={busy} onClick={() => void act(onLeave)}>Leave room</button>
+      </div>
+    </div>
+  </main>;
 }

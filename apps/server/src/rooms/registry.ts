@@ -13,6 +13,7 @@ import { randomInt } from 'node:crypto';
 
 export interface AuthenticatedRoomPlayer {
   id: string;
+  username: string;
   email: string;
 }
 
@@ -283,10 +284,9 @@ export class RoomRegistry {
   }
 
   private newPlayer(player: AuthenticatedRoomPlayer, socketId: string, slot: number): RoomPlayer {
-    const displayName = (player.email.split('@')[0] || 'Player').slice(0, 32);
     return {
       ...player,
-      displayName,
+      displayName: player.username,
       slot,
       isReady: false,
       socketIds: new Set([socketId]),

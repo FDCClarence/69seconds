@@ -105,6 +105,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
         return;
       }
       socket.data.playerId = user.id;
+      socket.data.playerUsername = user.username;
       socket.data.playerEmail = user.email;
       next();
     } catch (cause) {
@@ -117,12 +118,13 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
 
   io.on('connection', (socket) => {
     const playerId = socket.data.playerId;
+    const playerUsername = socket.data.playerUsername;
     const playerEmail = socket.data.playerEmail;
-    if (!playerId || !playerEmail) {
+    if (!playerId || !playerUsername || !playerEmail) {
       socket.disconnect(true);
       return;
     }
-    const identity = { id: playerId, email: playerEmail };
+    const identity = { id: playerId, username: playerUsername, email: playerEmail };
 
     const recovered = rooms.reconnect(identity, socket.id);
     if (recovered) {

@@ -57,13 +57,21 @@ describe('shared contracts', () => {
     expect(normalizeMovementVector({ x: 1, y: 1 }).x).toBeCloseTo(Math.SQRT1_2);
   });
 
-  it('normalizes auth emails and strictly validates auth bodies', () => {
-    expect(registerRequestSchema.parse({
+  it('normalizes auth credentials and strictly validates auth bodies', () => {
+    const registration = registerRequestSchema.parse({
+      username: '  Cart_Goblin ',
       email: ' PLAYER@Example.COM ',
       password: 'a-long-password',
-    }).email).toBe('player@example.com');
-    expect(() => loginRequestSchema.parse({
+    });
+    expect(registration).toMatchObject({ username: 'cart_goblin', email: 'player@example.com' });
+    expect(() => registerRequestSchema.parse({
+      username: 'no spaces',
       email: 'player@example.com',
+      password: 'a-long-password',
+    })).toThrow();
+    expect(loginRequestSchema.parse({ identifier: ' Cart_Goblin ', password: 'password' }).identifier).toBe('cart_goblin');
+    expect(() => loginRequestSchema.parse({
+      identifier: 'player@example.com',
       password: 'password',
       unexpected: true,
     })).toThrow();

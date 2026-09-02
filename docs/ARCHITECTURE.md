@@ -48,7 +48,7 @@ The committed migrations create normalized, uniquely indexed users and expiring 
 ## Socket.IO connection and message flow
 
 1. The browser first restores its HTTP session.
-2. Socket.IO connects with cookies/credentials; connection middleware resolves the same server session and stores trusted `playerId` and account email in socket data. Missing, expired, and invalid sessions fail the handshake with `UNAUTHENTICATED`.
+2. Socket.IO connects with cookies/credentials; connection middleware resolves the same server session and stores the trusted `playerId`, username, and account email in socket data. Missing, expired, and invalid sessions fail the handshake with `UNAUTHENTICATED`.
 3. Room create/join/leave, ready, and start commands locate a server-owned in-memory room and authorize that trusted player. Clients never submit an identity, slot, readiness for another player, or host claim.
 4. During gameplay the client emits intent events: `input:update`, `interaction:request`, and `shove:request`.
 5. The transport parses each payload with its shared Zod schema, applies rate/size controls, and passes validated intent to the room simulation.

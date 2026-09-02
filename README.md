@@ -26,7 +26,7 @@ The web app runs at `http://localhost:5173`; Express and Socket.IO run at `http:
 
 Vite loads `apps/web/.env`; server scripts load `apps/server/.env` through `dotenv`. `DATABASE_URL` is required so the server fails fast instead of silently using an unintended database.
 
-The server talks to MySQL through `mysql2`. Identifiers are application-generated UUIDs in `CHAR(36)` columns because MySQL has no `uuid` type and no `INSERT ... RETURNING`. Timestamps are `DATETIME(3)`, which carries no zone, so the pool sets `timezone: 'Z'` and pins every connection to `SET time_zone = '+00:00'`; both are required for correct UTC round-trips when the Node process or the database server is not itself on UTC. `users.email` is `VARCHAR(255)` under MySQL's default case-insensitive collation, which is compatible with the emails the server already lowercases before storing.
+The server talks to MySQL through `mysql2`. Identifiers are application-generated UUIDs in `CHAR(36)` columns because MySQL has no `uuid` type and no `INSERT ... RETURNING`. Timestamps are `DATETIME(3)`, which carries no zone, so the pool sets `timezone: 'Z'` and pins every connection to `SET time_zone = '+00:00'`; both are required for correct UTC round-trips when the Node process or the database server is not itself on UTC. `users.email` is `VARCHAR(255)` and `users.username` is `VARCHAR(24)`; both are uniquely indexed and lowercased by the shared schemas before they reach the database, so uniqueness never depends on the column collation.
 
 ## Authentication API
 
@@ -39,13 +39,13 @@ All request/response bodies use JSON. Browser callers must send credentials (for
 | `POST /api/auth/logout` | Revoke the presented session and clear its cookie | Idempotent |
 | `GET /api/auth/me` | Return the current public user | Required |
 
-Registration accepts `{ "email": string, "password": string }`; passwords must be 12–128 characters. Login uses the same fields. Emails are trimmed, lowercased, and uniquely indexed. Errors use `{ "error": { "code", "message", "retryable" } }` with stable codes.
+Registration accepts `{ "username": string, "email": string, "password": string }`; usernames are 3–24 characters of `a–z`, `0–9`, or `_`, and passwords must be 12–128 characters. Login accepts `{ "identifier": string, "password": string }`, where the identifier is either the username or the email address. Usernames and emails are trimmed, lowercased, and uniquely indexed; a taken one returns `USERNAME_ALREADY_TAKEN` or `EMAIL_ALREADY_REGISTERED`. Errors use `{ "error": { "code", "message", "retryable" } }` with stable codes.
 
 The cookie contains a random opaque value only. The database stores its SHA-256 digest, and password hashes use Argon2id. In development the cookie is HTTP-only, host-only, `SameSite=Lax`, and not `Secure` so localhost HTTP works. `NODE_ENV=production` makes it `Secure` and defaults its name to the `__Host-`-prefixed `__Host-69s_session`. Production defaults to one trusted proxy hop for Railway; local/test defaults to none. `WEB_ORIGIN` is an exact comma-separated allowlist and never accepts `*`.
 
 ## Private rooms
 
-The authenticated React home links to Create Room and Join Room views. Socket.IO reuses the session cookie during its handshake; clients never send a player ID or host claim. Room commands are `room:create`, `room:join`, `room:leave`, `lobby:ready`, and `lobby:start`, with authoritative state broadcast as `lobby:state`.
+The landing page is the login/register form; the authenticated home is a single centered menu with Create Room and a Join Room code field, under a top bar whose account menu holds Log out. Socket.IO reuses the session cookie during its handshake; clients never send a player ID or host claim. Room commands are `room:create`, `room:join`, `room:leave`, `lobby:ready`, and `lobby:start`, with authoritative state broadcast as `lobby:state`.
 
 Rooms hold one to four distinct users in server memory. Codes are six readable characters, a disconnected member has a 15-second reconnection grace, and host status migrates to the remaining lowest slot after a host is actually removed. Starting requires every rostered player—including the host—to be connected and ready. Active rooms do not survive a server restart, and production must remain at one application replica until shared room infrastructure is added.
 

@@ -14,6 +14,7 @@ type TestClient = ClientSocket<ServerToClientEvents, ClientToServerEvents>;
 
 const users = Array.from({ length: 5 }, (_, index): UserRow => ({
   id: `00000000-0000-4000-8000-00000000000${index + 1}`,
+  username: `player${index + 1}`,
   email: `player${index + 1}@example.com`,
   passwordHash: 'not-used',
   createdAt: new Date('2026-09-02T00:00:00.000Z'),

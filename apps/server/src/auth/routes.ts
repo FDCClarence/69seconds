@@ -10,7 +10,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { rateLimit } from 'express-rate-limit';
 import { clearSessionCookie, readSessionToken, setSessionCookie, type SessionCookieConfig } from './cookies.js';
 import { requireAuth } from './middleware.js';
-import { DuplicateEmailError, type AuthService } from './service.js';
+import { DuplicateCredentialError, type AuthService } from './service.js';
 import { sendApiError, toPublicUser } from '../http.js';
 
 export interface AuthRouterOptions {
@@ -39,12 +39,16 @@ export function createAuthRouter(options: AuthRouterOptions): Router {
     }
 
     try {
-      const result = await options.auth.register(parsed.data.email, parsed.data.password);
+      const result = await options.auth.register(parsed.data.username, parsed.data.email, parsed.data.password);
       setSessionCookie(response, options.cookie, result.session.token);
       response.status(201).json(authResponseSchema.parse({ user: toPublicUser(result.user) }));
     } catch (error) {
-      if (error instanceof DuplicateEmailError) {
-        sendApiError(response, 409, 'EMAIL_ALREADY_REGISTERED', 'An account with this email already exists');
+      if (error instanceof DuplicateCredentialError) {
+        if (error.field === 'username') {
+          sendApiError(response, 409, 'USERNAME_ALREADY_TAKEN', 'That username is already taken');
+        } else {
+          sendApiError(response, 409, 'EMAIL_ALREADY_REGISTERED', 'An account with this email already exists');
+        }
         return;
       }
       throw error;
@@ -59,9 +63,9 @@ export function createAuthRouter(options: AuthRouterOptions): Router {
     }
 
     const currentToken = readSessionToken(request, options.cookie);
-    const result = await options.auth.login(parsed.data.email, parsed.data.password, currentToken);
+    const result = await options.auth.login(parsed.data.identifier, parsed.data.password, currentToken);
     if (!result) {
-      sendApiError(response, 401, 'INVALID_CREDENTIALS', 'Email or password is incorrect');
+      sendApiError(response, 401, 'INVALID_CREDENTIALS', 'Those credentials are incorrect');
       return;
     }
     setSessionCookie(response, options.cookie, result.session.token);
