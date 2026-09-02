@@ -1,0 +1,33 @@
+{
+  "name": "69-seconds",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "predev": "npm run build -w @69-seconds/shared",
+    "dev": "concurrently -n shared,server,web -c yellow,cyan,magenta \"npm run dev -w @69-seconds/shared\" \"npm run dev -w @69-seconds/server\" \"npm run dev -w @69-seconds/web\"",
+    "build": "npm run build -w @69-seconds/shared && npm run build -w @69-seconds/server && npm run build -w @69-seconds/web",
+    "pretypecheck": "npm run build -w @69-seconds/shared",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "prelint": "npm run build -w @69-seconds/shared",
+    "lint": "eslint .",
+    "pretest": "npm run build -w @69-seconds/shared",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@eslint/js": "9.35.0",
+    "concurrently": "^9.2.1",
+    "eslint": "9.35.0",
+    "globals": "^16.3.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "8.42.0"
+  },
+  "engines": {
+    "node": ">=20.19.0",
+    "npm": ">=10.0.0"
+  }
+}
