@@ -2,7 +2,7 @@
 
 ## Current milestone
 
-Step 5 complete: local Phaser 4 grocery-store movement prototype mounted in the authenticated match route.
+Step 6 complete: local-only grocery-store looting, inventory, and assigned-cart loop mounted in the Phaser match route.
 
 ## Implemented
 
@@ -30,6 +30,13 @@ Step 5 complete: local Phaser 4 grocery-store movement prototype mounted in the 
 - Space and Ctrl are wired as local-only interact/shove hooks with short Phaser and React debug indicators. They do not emit network messages or alter gameplay state.
 - A responsive React HUD overlays the canvas with the room/phase, controls, four empty carry slots, scene readiness, and a route-leave action.
 - The focusable game surface scopes keyboard listeners to the match view, captures movement/action keys only while focused, prevents Space scrolling, and clears key state on focus/window loss to avoid stuck movement.
+- `apps/web/src/game/maps/grocery-store-placeholder-map.ts` now provides a clearly documented generated placeholder map while Tiled art/assets are unavailable. Its rendered floor/shelf layer, invisible shelf-collision layer, and spawn/cart/loot object layer are deliberately separate so a later Tiled JSON export has a compatible boundary.
+- The generated 1,800 × 1,200 store has a labelled central spawn pad, three rows of shelf aisles, 12 data-driven item spawn points, and four slot-assigned carts along the bottom checkout lane. Slot `0`–`3` maps locally to `cart-0`–`cart-3`; the matching cart is visibly highlighted.
+- A grid route-verifier test proves the central spawn has a collision-safe path to every loot spawn and every cart interaction point. It is a layout regression check, not server collision authority.
+- `packages/shared/src/loot.ts` supplies the original, data-driven grocery catalog and pure local inventory/deposit rules. Commands express only `PICK_UP`, `DEPOSIT`, or `NO_TARGET`; their accepted/rejected result is separate, preserving the seam where Step 8 will apply server acknowledgements instead of local decisions.
+- Space selects the nearest available item inside the interaction radius, removes it from the world on successful pickup, and refuses a fifth item. At a cart, Space deposits all carried items only when that cart matches the local player's stable slot. Wrong carts, empty carts, full hands, unavailable items, and empty interaction range all produce explicit feedback.
+- In-world prompts describe the closest item/cart context, including hands-full and wrong-cart states. Phaser publishes compact carry-slot and feedback events through the typed React bridge; React renders item-labelled carry slots, deposited count, and accessible feedback without rerendering the scene each frame.
+- `R` performs a local debug reset: it restores every spawned item, clears local carry/deposit state, and updates the HUD. Ctrl remains the existing shove debug hook.
 - Movement tests cover idle/opposing input, diagonal normalization, equal cardinal/diagonal walk magnitude, and sprint magnitude. Lifecycle tests cover idempotent game destruction, canvas removal, and teardown when leaving the React match route.
 
 ## Prototype tuning
@@ -38,27 +45,30 @@ Step 5 complete: local Phaser 4 grocery-store movement prototype mounted in the 
 - Sprint speed: 235 pixels/second (1.57× walk speed).
 - Player collision radius: 15 pixels.
 - Map: 1,800 × 1,200 pixels.
-- Shelf collision footprint: 280 × 76 pixels; 12 shelves in three rows.
+- Shelf collision footprint: 260 × 72 pixels; 12 shelves in three rows.
 - Camera follow lerp: 0.10 on both axes.
 - Camera minimum zoom: 1.0, increased to `max(viewport width / 1,800, viewport height / 1,200)` on resize.
-- Local action indicator duration: 650 ms in-scene and 700 ms in the React overlay.
+- Local interaction feedback duration: 1,100 ms in-scene and 1,200 ms in the React overlay.
+- Loot interaction radius: 64 pixels; cart interaction radius: 92 pixels.
+- Local catalog/spawn count: 12 original placeholder items; carry limit: 4.
+- Debug reset: `R`, local-only.
 
 ## Verification
 
 Completed on 2026-09-02 with Node.js 22.6.0, npm 10.8.2, Phaser 4.2.1, and Vitest 3.2.7:
 
 - `npm run lint` — passed with no errors or warnings.
-- `npm run build` — passed for shared, server, and web. Vite produced the production bundle; the two existing non-failing Zod annotation-position warnings remain.
 - `npm run typecheck` — passed in all three workspaces.
-- `npm test` — passed 26 tests: 9 shared, 6 server, and 11 web. The 7 MySQL auth integration cases were skipped because `TEST_DATABASE_URL` was not supplied; they were not changed by this milestone.
-- The Socket.IO integration portion was run with permission to bind an ephemeral localhost port and passed all 4 lifecycle cases.
-- `npm run dev -w @69-seconds/web -- --host 127.0.0.1` — Vite started successfully on port 5173; the React document and the lazy Phaser scene module both returned HTTP 200. Smooth speed/normalization and teardown are covered by automated tests; Arcade collision, bounded resize behavior, and focus ownership are exercised by the compiled scene implementation. Browser automation remains deferred.
+- `npm test` — passed 35 tests: 13 shared, 6 server, and 16 web. The test command was rerun with permission to bind an ephemeral localhost port; all four existing Socket.IO lifecycle tests passed. The 7 MySQL auth integration cases remain skipped because `TEST_DATABASE_URL` was not supplied.
+- New tests cover pure pickup/full-hands/deposit/invalid-cart/no-target rules, all 12 generated loot routes plus all four cart routes from the central spawn, and typed Phaser-to-React carry/feedback bridge rendering.
+- `npm run build` — passed for shared, server, and web. Vite produced the production bundle; the two existing non-failing Zod annotation-position warnings and its advisory lazy-Phaser chunk-size warning remain.
+- `git diff --check` — passed.
 
 ## Known limitations
 
 - Active rooms are intentionally process-local and disappear on server restart. Production must use one application replica until a shared room store and Socket.IO adapter are designed; Redis remains deferred.
-- Starting currently hands the room to `COUNTDOWN` and records its deadline, but no authoritative simulation advances it to `LOOTING` yet. The local prototype intentionally permits movement in the mounted match view so game feel can be tuned before phase-gated authoritative simulation exists.
-- The generated grocery store, player, shelves, debug actions, and empty inventory HUD are placeholders. There are no actual pickups, deposits, shove effects, multiplayer input/snapshots, prediction, reconciliation, interpolation, or tally behavior yet.
+- Starting currently hands the room to `COUNTDOWN` and records its deadline, but no authoritative simulation advances it to `LOOTING` yet. The local prototype intentionally permits movement and local loot interaction in the mounted match view so game feel can be tuned before phase-gated authoritative simulation exists.
+- The generated grocery store, player, shelves, carts, and item markers are original placeholders rather than a Tiled JSON/tileset. The local inventory is intentionally non-authoritative: it has no shared availability, multiplayer input/snapshots, prediction, reconciliation, interpolation, or tally behavior. Step 8 must replace its local command resolver with atomic server decisions.
 - Player display labels are the account username; profiles carry no separate display name or avatar yet, so the account menu shows a letter tile built from the username.
 - Browser-level multi-context Playwright coverage is still deferred; the current multiplayer lifecycle coverage uses real Socket.IO server/client connections at the server integration layer.
 - The MySQL auth integration suite still requires an explicitly named test database through `TEST_DATABASE_URL`. The non-database root suite deliberately skips those 7 cases.
@@ -66,4 +76,4 @@ Completed on 2026-09-02 with Node.js 22.6.0, npm 10.8.2, Phaser 4.2.1, and Vites
 
 ## Recommended next step
 
-Proceed exactly to Step 6 in `CODEX_BUILD_PROMPTS.md`: build the complete local-only looting loop with a structured store map, shared loot, carry/deposit interactions, and assigned carts, without adding multiplayer synchronization yet.
+Proceed exactly to Step 7 in `CODEX_BUILD_PROMPTS.md`: make movement authoritative for one to four players with a server-readable collision representation, sequenced input, local prediction, reconciliation, interpolation, and reconnect-safe synchronization. Preserve the map's collision/object data as an input to that authority work; do not network the local loot resolver until Step 8.

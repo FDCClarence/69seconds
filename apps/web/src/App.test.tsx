@@ -211,4 +211,24 @@ describe('authentication application', () => {
     await waitFor(() => expect(destroy).toHaveBeenCalledWith(true));
     expect(await screen.findByRole('button', { name: 'Create room' })).toBeTruthy();
   });
+
+  it('renders carry slots and local feedback through the narrow Phaser bridge', async () => {
+    const bridgeFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.append(document.createElement('canvas'));
+      callbacks.onReady?.();
+      callbacks.onInventoryChange?.({
+        carriedItems: [{ id: 'loot-milk', label: 'Milk', shortLabel: 'MLK', color: '#83c6dc' }],
+        depositedCount: 2,
+      });
+      callbacks.onFeedback?.({ kind: 'PICKUP_SUCCEEDED', message: 'Picked up Milk' });
+      return { destroy: () => undefined };
+    };
+    const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
+      joinRoom: vi.fn().mockResolvedValue(startedLobby),
+    }), bridgeFactory);
+    expect(await screen.findByLabelText('Milk in carry slot 1')).toBeTruthy();
+    expect(screen.getByLabelText('2 items deposited')).toBeTruthy();
+    expect(screen.getByRole('status').textContent).toContain('Picked up Milk');
+  });
 });

@@ -465,11 +465,17 @@ function Lobby({ code, room, user, connection, onJoin, onReady, onStart, onLeave
     </main>;
   }
 
+  const self = room.players.find((player) => player.id === user.id);
   if (room.phase !== 'LOBBY') {
-    return <MatchGame phase={room.phase} roomCode={room.code} onLeave={onLeave} gameFactory={gameFactory} />;
+    return <MatchGame
+      phase={room.phase}
+      roomCode={room.code}
+      assignedCartSlot={self?.slot ?? 0}
+      onLeave={onLeave}
+      gameFactory={gameFactory}
+    />;
   }
 
-  const self = room.players.find((player) => player.id === user.id);
   const isHost = room.hostPlayerId === user.id;
   const canStart = room.players.every((player) => player.isConnected && player.isReady);
 

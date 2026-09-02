@@ -10,6 +10,7 @@ interface GameplayKeys {
   sprint: Phaser.Input.Keyboard.Key;
   interact: Phaser.Input.Keyboard.Key;
   shove: Phaser.Input.Keyboard.Key;
+  debugReset: Phaser.Input.Keyboard.Key;
 }
 
 export interface InputFrame {
@@ -33,6 +34,7 @@ export class GameInput {
       sprint: Phaser.Input.Keyboard.KeyCodes.SHIFT,
       interact: Phaser.Input.Keyboard.KeyCodes.SPACE,
       shove: Phaser.Input.Keyboard.KeyCodes.CTRL,
+      debugReset: Phaser.Input.Keyboard.KeyCodes.R,
     }, true, false) as GameplayKeys;
   }
 
@@ -47,10 +49,14 @@ export class GameInput {
     return { velocity: movementVelocity(movement, sprinting), sprinting };
   }
 
-  readAction(): DebugAction | null {
+  readAction(): DebugAction | 'INTERACT' | null {
     if (Phaser.Input.Keyboard.JustDown(this.keys.interact)) return 'INTERACT';
     if (Phaser.Input.Keyboard.JustDown(this.keys.shove)) return 'SHOVE';
     return null;
+  }
+
+  readDebugReset(): boolean {
+    return Phaser.Input.Keyboard.JustDown(this.keys.debugReset);
   }
 
   reset(): void {
