@@ -1,6 +1,6 @@
 import {
   GAME,
-  lootCatalogEntry,
+  LOOT_CATALOG,
   lootImageUrl,
   roomCodeSchema,
   type LootCategory,
@@ -590,13 +590,13 @@ function Lobby({ code, room, matchTally, user, connection, networkError, onDismi
   </main>;
 }
 
-/** Deposited-item thumbnail, falling back to a `?` chip for unillustrated items. */
+/** Deposited-item thumbnail, falling back to a `?` chip for unillustrated or unrecognized items. */
 function TallyItemArt({ catalogId, label }: { catalogId: string; label: string }) {
-  const entry = lootCatalogEntry(catalogId);
-  const url = lootImageUrl(entry);
+  const entry = LOOT_CATALOG.find((candidate) => candidate.id === catalogId);
+  const url = entry ? lootImageUrl(entry) : null;
   return url
     ? <img className="tally-art" src={url} alt="" title={label} />
-    : <b className="tally-art is-placeholder" style={{ backgroundColor: `#${entry.color.toString(16).padStart(6, '0')}` }} title={label}>?</b>;
+    : <b className="tally-art is-placeholder" style={{ backgroundColor: `#${(entry?.color ?? 0x7a8b99).toString(16).padStart(6, '0')}` }} title={label}>?</b>;
 }
 
 const CATEGORY_LABELS: Record<LootCategory, string> = {

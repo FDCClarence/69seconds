@@ -14,7 +14,6 @@ import {
   isWithinFacingCone,
   isWithinInteractionRadius,
   LOOT_CATALOG,
-  lootCatalogEntry,
   lootImageUrl,
   movementAxis,
   movementVelocity,
@@ -27,6 +26,7 @@ import {
   type GameSnapshot,
   type InteractionRequest,
   type InteractionResult,
+  type LootCatalogEntry,
   type ShoveLanded,
   type ShoveRequest,
   type SprintState,
@@ -67,6 +67,17 @@ const LOOT_MARKER_SIZE = 40;
 /** Small presentational lift that makes loot read as hovering over the floor. */
 const LOOT_HOVER_BASELINE = -3;
 const LOOT_HOVER_HEIGHT = 10;
+
+/**
+ * A mid-deploy server can briefly hand the client a catalog id from a loot
+ * table it hasn't picked up yet (or vice versa). `lootCatalogEntry` fails
+ * loudly on purpose for the authoritative simulation, but the client can't
+ * afford to crash the whole scene over one stale item, so it looks the id up
+ * itself and lets callers fall back gracefully.
+ */
+function findLootCatalogEntry(catalogId: string): LootCatalogEntry | undefined {
+  return LOOT_CATALOG.find((candidate) => candidate.id === catalogId);
+}
 
 interface LootPresentation {
   root: Phaser.GameObjects.Container;
@@ -491,7 +502,8 @@ export class GroceryStoreScene extends Phaser.Scene {
     for (const lootObject of this.lootObjects.values()) lootObject.root.destroy();
     this.lootObjects.clear();
     for (const item of Object.values(this.lootView.items)) {
-      this.lootObjects.set(item.id, this.createLootObject(item.id, item.catalogId, item.position.x, item.position.y));
+      const presentation = this.createLootObject(item.id, item.catalogId, item.position.x, item.position.y);
+      if (presentation) this.lootObjects.set(item.id, presentation);
     }
     this.refreshLootVisibility();
   }
@@ -522,8 +534,12 @@ export class GroceryStoreScene extends Phaser.Scene {
     return assignedCartIdForSlot(slot);
   }
 
-  private createLootObject(id: string, catalogId: string, x: number, y: number): LootPresentation {
-    const catalog = lootCatalogEntry(catalogId);
+  private createLootObject(id: string, catalogId: string, x: number, y: number): LootPresentation | undefined {
+    const catalog = findLootCatalogEntry(catalogId);
+    if (!catalog) {
+      console.warn(`Skipping unrecognized loot item "${catalogId}" — client and server catalogs disagree.`);
+      return undefined;
+    }
     const shadow = this.add.ellipse(0, LOOT_MARKER_SIZE / 2 - 2, LOOT_MARKER_SIZE * 0.72, 9, 0x0d1a1c, 0.42);
     const hoveringParts: Phaser.GameObjects.GameObject[] = [];
     const textureKey = lootTextureKey(catalog.id);
@@ -608,11 +624,11 @@ export class GroceryStoreScene extends Phaser.Scene {
     const carried = predictedCarriedItemIds(this.lootView).length;
     const item = this.nearestReachableItem();
     if (item) {
-      const catalog = lootCatalogEntry(item.catalogId);
+      const catalog = findLootCatalogEntry(item.catalogId);
       const full = carried >= GAME.maxCarriedItems;
       this.setPrompt(full
         ? 'HANDS FULL · deposit at your cart'
-        : `${bindingLabel(this.bindings.interact)} · pick up ${catalog.label}`);
+        : `${bindingLabel(this.bindings.interact)} · pick up ${catalog?.label ?? 'item'}`);
       return;
     }
     const cart = this.nearestReachableCart();
@@ -641,7 +657,8 @@ export class GroceryStoreScene extends Phaser.Scene {
     const carriedItems = predictedCarriedItemIds(this.lootView).flatMap((itemId) => {
       const item = this.lootView.items[itemId];
       if (!item) return [];
-      const catalog = lootCatalogEntry(item.catalogId);
+      const catalog = findLootCatalogEntry(item.catalogId);
+      if (!catalog) return [];
       return [{
         id: item.id,
         label: catalog.label,
@@ -661,7 +678,7 @@ export class GroceryStoreScene extends Phaser.Scene {
   private feedbackFor(result: InteractionResult): GameFeedback {
     if (result.outcome === 'PICKED_UP') {
       this.playPickupEffect();
-      return { kind: 'PICKED_UP', message: `Picked up ${lootCatalogEntry(result.catalogId).label}` };
+      return { kind: 'PICKED_UP', message: `Picked up ${findLootCatalogEntry(result.catalogId)?.label ?? 'item'}` };
     }
     if (result.outcome === 'DEPOSITED') {
       this.playDepositEffect();
