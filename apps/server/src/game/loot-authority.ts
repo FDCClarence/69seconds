@@ -1,7 +1,9 @@
 import {
-  GAME,
   GROCERY_STORE_CARTS,
+  canCarrySlots,
+  carryableSlotCost,
   generateLootSpawns,
+  generateNpcSpawns,
   LOOT,
   assignedCartIdForSlot,
   cartLabel,
@@ -71,6 +73,12 @@ export interface InteractionResolution {
 export interface LootAuthorityOptions {
   /** Defaults to a fresh randomized draw from the shared loot table. */
   spawns?: readonly LootSpawnPoint[];
+  /**
+   * People standing in the aisles. Defaults to a fresh draw across the spawn
+   * locations the loot draw left free, so nobody shares a spot with an item.
+   * Pass `[]` for a match with no NPCs at all.
+   */
+  npcSpawns?: readonly LootSpawnPoint[];
   carts?: readonly CartDefinition[];
   /** Defaults to the shared store collision, which is the production geometry. */
   collision?: readonly CollisionRectangle[];
@@ -91,6 +99,7 @@ export const REJECTION_MESSAGES: Record<InteractionRejectionReason, string> = {
   UNKNOWN_TARGET: 'That target does not exist in this match',
   ITEM_UNAVAILABLE: 'That item is no longer available',
   HANDS_FULL: 'Hands full · deposit at your assigned cart',
+  NEEDS_EMPTY_HANDS: 'Empty your hands first · carrying someone takes every slot',
   NOT_YOUR_CART: 'That cart is not assigned to you',
   NOTHING_CARRIED: 'Nothing to deposit · collect an item first',
   RATE_LIMITED: 'Slow down · too many interactions at once',
@@ -116,7 +125,20 @@ export class MatchLootAuthority {
   ) {
     this.roomCode = roomCode;
     this.collision = options.collision;
-    for (const spawn of options.spawns ?? generateLootSpawns()) {
+    // People are placed after the loot and onto the locations it left free, so
+    // the two draws can never collide on a spawn id.
+    const lootSpawns = options.spawns ?? generateLootSpawns();
+    // A caller that pins the loot layout pins the roster too: a fixture asking
+    // for five known items must not also receive a store full of surprise
+    // people. Production passes neither and gets both draws.
+    const npcSpawns = options.npcSpawns
+      ?? (options.spawns
+        ? []
+        : generateNpcSpawns({ excludedLocationIds: lootSpawns.map((spawn) => spawn.id) }));
+    for (const spawn of [...lootSpawns, ...npcSpawns]) {
+      if (this.items.has(spawn.id)) {
+        throw new Error(`Two carryables were placed on spawn location ${spawn.id}`);
+      }
       this.items.set(spawn.id, {
         id: spawn.id,
         catalogId: spawn.catalogId,
@@ -223,6 +245,7 @@ export class MatchLootAuthority {
       if (!targetId) return this.rejectFor(player, context, 'NO_NEARBY_TARGET');
       return this.deposit(player, context, targetId);
     }
+    if (action === 'DROP') return this.drop(player, context);
     return this.interactWithNearest(player, context);
   }
 
@@ -245,7 +268,7 @@ export class MatchLootAuthority {
       })),
       carriedCounts: [...this.players.values()].map((player) => ({
         playerId: player.id,
-        count: player.carried.length,
+        count: this.slotsUsedBy(player),
       })),
       carriedItemIds: [...(this.players.get(playerId)?.carried ?? [])],
     });
@@ -269,6 +292,14 @@ export class MatchLootAuthority {
     });
   }
 
+  /** Carry slots this player's hands currently consume; a person costs all of them. */
+  private slotsUsedBy(player: LootPlayer): number {
+    return player.carried.reduce(
+      (slots, itemId) => slots + carryableSlotCost(this.items.get(itemId)?.catalogId ?? ''),
+      0,
+    );
+  }
+
   private reachableThroughGeometry(from: Vector2, to: Vector2): boolean {
     return this.collision ? hasLineOfAccess(from, to, this.collision) : hasLineOfAccess(from, to);
   }
@@ -290,12 +321,24 @@ export class MatchLootAuthority {
     return true;
   }
 
+  /**
+   * An unaddressed interaction resolves to whatever is actually actionable. An
+   * item the player has no room for does not shadow a cart within reach, or a
+   * player carrying a person could stand at their own cart and never recruit
+   * them. A nearest item that fits nothing and has no cart beside it is still
+   * attempted, so the player gets the honest reason back.
+   */
   private interactWithNearest(player: LootPlayer, context: InteractionContext): InteractionResolution {
     const item = this.nearestReachableItem(context.position);
-    if (item) return this.pickUp(player, context, item.id);
+    if (item && this.fitsInHands(player, item)) return this.pickUp(player, context, item.id);
     const cart = this.nearestReachableCart(context.position);
     if (cart) return this.deposit(player, context, cart.id);
+    if (item) return this.pickUp(player, context, item.id);
     return this.rejectFor(player, context, 'NO_NEARBY_TARGET');
+  }
+
+  private fitsInHands(player: LootPlayer, item: AuthoritativeItem): boolean {
+    return canCarrySlots(this.slotsUsedBy(player), carryableSlotCost(item.catalogId));
   }
 
   private pickUp(player: LootPlayer, context: InteractionContext, itemId: string): InteractionResolution {
@@ -311,8 +354,16 @@ export class MatchLootAuthority {
     if (item.holderPlayerId !== null || item.cartId !== null) {
       return this.rejectFor(player, context, 'ITEM_UNAVAILABLE');
     }
-    if (player.carried.length >= GAME.maxCarriedItems) {
-      return this.rejectFor(player, context, 'HANDS_FULL');
+    const slotCost = carryableSlotCost(item.catalogId);
+    const usedSlots = this.slotsUsedBy(player);
+    if (!canCarrySlots(usedSlots, slotCost)) {
+      // A person needs the whole inventory, so partly full hands are a different
+      // problem from full ones: one is fixed by dropping, the other by banking.
+      return this.rejectFor(
+        player,
+        context,
+        slotCost > 1 && usedSlots > 0 ? 'NEEDS_EMPTY_HANDS' : 'HANDS_FULL',
+      );
     }
 
     item.holderPlayerId = player.id;
@@ -333,7 +384,49 @@ export class MatchLootAuthority {
         roomCode: this.roomCode,
         playerId: player.id,
         itemId: item.id,
-        carriedCount: player.carried.length,
+        carriedCount: this.slotsUsedBy(player),
+      }),
+      replayed: false,
+    };
+  }
+
+  /**
+   * Releases the most recently picked-up carryable where the player is standing.
+   * The position comes from this authority's own view of the player, which the
+   * simulation already validated against the store geometry, so a drop can
+   * never place loot inside a shelf or outside the map. Dropping a person frees
+   * every slot at once, which is the only way to change your mind about a
+   * recruit before reaching the cart.
+   */
+  private drop(player: LootPlayer, context: InteractionContext): InteractionResolution {
+    const itemId = player.carried[player.carried.length - 1];
+    if (itemId === undefined) return this.rejectFor(player, context, 'NOTHING_CARRIED');
+    const item = this.items.get(itemId);
+    if (!item) return this.rejectFor(player, context, 'UNKNOWN_TARGET');
+
+    const position = { x: context.position.x, y: context.position.y };
+    item.holderPlayerId = null;
+    item.position = position;
+    player.carried = player.carried.filter((carriedId) => carriedId !== itemId);
+    const result = interactionResultSchema.parse({
+      outcome: 'DROPPED',
+      requestId: context.request.requestId,
+      itemId: item.id,
+      catalogId: item.catalogId,
+      position,
+      carriedItemIds: [...player.carried],
+    });
+    this.rememberCommitted(player, result);
+    return {
+      result,
+      update: lootUpdateSchema.parse({
+        type: 'DROPPED',
+        sequence: this.sequence++,
+        roomCode: this.roomCode,
+        playerId: player.id,
+        itemId: item.id,
+        position,
+        carriedCount: this.slotsUsedBy(player),
       }),
       replayed: false,
     };

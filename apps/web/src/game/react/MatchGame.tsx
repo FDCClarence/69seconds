@@ -19,7 +19,8 @@ import {
   type BindableAction,
   type InputBindings,
 } from '../input/key-bindings.js';
-import type { CarryHudState, GameFeedback, GroceryGameFactory, SprintHudState } from '../types.js';
+import { CarryableArt } from '../../carryable-art.js';
+import type { CarryHudItem, CarryHudState, GameFeedback, GroceryGameFactory, SprintHudState } from '../types.js';
 import { mountGroceryGame } from './game-lifecycle.js';
 
 const READY_SPRINT: SprintHudState = {
@@ -32,8 +33,30 @@ const READY_SPRINT: SprintHudState = {
 
 const ACTION_LABELS: Readonly<Record<BindableAction, string>> = {
   up: 'Move up', down: 'Move down', left: 'Move left', right: 'Move right',
-  sprint: 'Sprint', interact: 'Interact', shove: 'Shove',
+  sprint: 'Sprint', interact: 'Interact', shove: 'Shove', drop: 'Put down item',
 };
+
+const EMPTY_CARRY: CarryHudState = { carriedItems: [], slotsUsed: 0, depositedCount: 0, synchronized: false };
+
+/**
+ * One rendered carry slot. A person consumes the whole inventory, so they fill
+ * the first slot and *block* the rest: those slots show an ✕ naming who is in
+ * your arms, rather than looking merely empty and pickable.
+ */
+type CarrySlot =
+  | { kind: 'empty' }
+  | { kind: 'held'; item: CarryHudItem }
+  | { kind: 'blocked'; item: CarryHudItem };
+
+function carrySlots(carriedItems: readonly CarryHudItem[]): CarrySlot[] {
+  const slots: CarrySlot[] = [];
+  for (const item of carriedItems) {
+    slots.push({ kind: 'held', item });
+    for (let extra = 1; extra < item.slotCost; extra += 1) slots.push({ kind: 'blocked', item });
+  }
+  while (slots.length < GAME.maxCarriedItems) slots.push({ kind: 'empty' });
+  return slots.slice(0, GAME.maxCarriedItems);
+}
 
 export function MatchGame({
   room,
@@ -59,7 +82,7 @@ export function MatchGame({
   const [ready, setReady] = useState(false);
   const [feedback, setFeedback] = useState<GameFeedback | null>(null);
   const [persistentNetworkError, setPersistentNetworkError] = useState<string | null>(null);
-  const [inventory, setInventory] = useState<CarryHudState>({ carriedItems: [], depositedCount: 0, synchronized: false });
+  const [inventory, setInventory] = useState<CarryHudState>(EMPTY_CARRY);
   const [sprint, setSprint] = useState<SprintHudState>(READY_SPRINT);
   const [displayPhase, setDisplayPhase] = useState(room.phase);
   const [phaseEndsAtMs, setPhaseEndsAtMs] = useState(room.phaseEndsAtMs);
@@ -137,7 +160,7 @@ export function MatchGame({
     const parent = gameHost.current;
     if (!parent) return undefined;
     setReady(false);
-    setInventory({ carriedItems: [], depositedCount: 0, synchronized: false });
+    setInventory(EMPTY_CARRY);
     setSprint(READY_SPRINT);
     let cleanup: (() => void) | undefined;
     let cancelled = false;
@@ -183,7 +206,8 @@ export function MatchGame({
 
   const controlsReady = ready && inventory.synchronized;
   const disconnected = connection !== 'CONNECTED';
-  const inventoryFull = inventory.carriedItems.length >= GAME.maxCarriedItems;
+  const inventoryFull = inventory.slotsUsed >= GAME.maxCarriedItems;
+  const carriedPerson = inventory.carriedItems.find((item) => item.isNpc);
   const feedbackTone = feedback ? feedbackClass(feedback) : '';
 
   /**
@@ -212,7 +236,7 @@ export function MatchGame({
       tabIndex={0}
       role="application"
       aria-label="69 Seconds grocery store. Focus to control your shopper; Tab releases gameplay controls."
-      aria-keyshortcuts={`${bindingLabel(bindings.interact)} ${bindingLabel(bindings.shove)}`}
+      aria-keyshortcuts={`${bindingLabel(bindings.interact)} ${bindingLabel(bindings.shove)} ${bindingLabel(bindings.drop)}`}
       onPointerDown={focusGame}
       onKeyDown={captureGameplayKey}
       onBlur={() => gameHost.current?.dispatchEvent(new Event('game-input-blur'))}
@@ -235,6 +259,7 @@ export function MatchGame({
         <span><kbd>{bindingLabel(bindings.sprint)}</kbd> sprint</span>
         <span><kbd>{bindingLabel(bindings.interact)}</kbd> interact</span>
         <span><kbd>{bindingLabel(bindings.shove)}</kbd> shove</span>
+        <span><kbd>{bindingLabel(bindings.drop)}</kbd> put down</span>
         <button type="button" className="hud-settings" aria-expanded={settingsOpen} onClick={() => { void gameAudio.unlock(); setSettingsOpen((open) => !open); }}>Settings</button>
       </div>
       <div className="meter-hud">
@@ -266,19 +291,37 @@ export function MatchGame({
       </div>
       <div className={`carry-hud${inventoryFull ? ' is-full' : ''}`}>
         <span className="hud-label">Carry</span>
-        <ol aria-label={`${inventory.carriedItems.length} of ${GAME.maxCarriedItems} carry slots filled`}>
-          {Array.from({ length: GAME.maxCarriedItems }, (_, index) => {
-            const item = inventory.carriedItems[index];
-            const className = item ? `is-filled${item.pending ? ' is-pending' : ''}` : undefined;
-            return <li key={index} className={className} aria-label={item ? `${item.label} in carry slot ${index + 1}${item.pending ? ', awaiting confirmation' : ''}` : `Empty carry slot ${index + 1}`}>
-              <span>{index + 1}</span>{item && (item.imageUrl
-                ? <img className="carry-art" src={item.imageUrl} alt="" title={item.label} />
-                : <b style={{ backgroundColor: item.color }} title={item.label}>?</b>)}
+        <ol aria-label={`${inventory.slotsUsed} of ${GAME.maxCarriedItems} carry slots filled`}>
+          {carrySlots(inventory.carriedItems).map((slot, index) => {
+            if (slot.kind === 'blocked') {
+              return <li key={index} className="is-blocked" aria-label={`Carry slot ${index + 1} taken up by ${slot.item.label}`}>
+                <span>{index + 1}</span><i aria-hidden="true">✕</i>
+              </li>;
+            }
+            if (slot.kind === 'empty') {
+              return <li key={index} aria-label={`Empty carry slot ${index + 1}`}><span>{index + 1}</span></li>;
+            }
+            const { item } = slot;
+            return <li
+              key={index}
+              className={`is-filled${item.pending ? ' is-pending' : ''}${item.isNpc ? ' is-person' : ''}`}
+              aria-label={`${item.label}${item.isNpc ? ', carried person filling every slot,' : ''} in carry slot ${index + 1}${item.pending ? ', awaiting confirmation' : ''}`}
+            >
+              <span>{index + 1}</span>
+              <CarryableArt
+                imageUrl={item.imageUrl}
+                crop={item.crop}
+                color={item.color}
+                label={item.label}
+                className="carry-art"
+              />
             </li>;
           })}
         </ol>
         <span className="deposit-count" aria-label={`${inventory.depositedCount} items deposited`}><b>{inventory.depositedCount}</b> banked</span>
-        {inventoryFull && <span className="carry-warning" aria-hidden="true">FULL</span>}
+        {carriedPerson
+          ? <span className="carry-warning is-person" aria-hidden="true">{carriedPerson.label.toUpperCase()}</span>
+          : inventoryFull && <span className="carry-warning" aria-hidden="true">FULL</span>}
       </div>
       <button type="button" className="hud-leave" onClick={() => void onLeave()}>Leave match</button>
     </section>
@@ -401,7 +444,8 @@ function playFeedbackCue(feedback: GameFeedback): void {
 
 function feedbackClass(feedback: GameFeedback): 'is-positive' | 'is-warning' | 'is-negative' {
   if (feedback.kind === 'PICKED_UP' || feedback.kind === 'DEPOSITED' || feedback.kind === 'SHOVE_LANDED') return 'is-positive';
-  if (feedback.kind === 'HANDS_FULL' || feedback.kind === 'SPRINT_EXHAUSTED' || feedback.kind === 'ON_COOLDOWN' || feedback.kind === 'RECOVERING') return 'is-warning';
+  // A deliberate put-down is neither a win nor an error: it reads as a notice.
+  if (feedback.kind === 'DROPPED' || feedback.kind === 'HANDS_FULL' || feedback.kind === 'SPRINT_EXHAUSTED' || feedback.kind === 'ON_COOLDOWN' || feedback.kind === 'RECOVERING') return 'is-warning';
   return 'is-negative';
 }
 

@@ -7,8 +7,10 @@ import {
   cartById,
   createLootView,
   isItemVisible,
+  lastCarriedItemId,
   predictPickup,
   predictedCarriedItemIds,
+  predictedSlotsUsed,
   rollbackPickup,
   visibleItems,
 } from './loot-view.js';
@@ -183,5 +185,99 @@ describe('client loot view', () => {
     const view = applyLootUpdate(createLootView(), pickedUpBy('player-1', 'loot-soup', 0));
     expect(view.synchronized).toBe(false);
     expect(view.items).toEqual({});
+  });
+});
+
+describe('client view of carried people', () => {
+  const PERSON = { id: 'npc-maya', catalogId: 'maya', position: { x: 905, y: 600 }, available: true };
+
+  function peopledSync(overrides: Partial<LootSync> = {}): LootSync {
+    const base = sync();
+    return { ...base, items: [...base.items, PERSON], ...overrides };
+  }
+
+  it('counts a carried person as every slot, not as one item', () => {
+    const view = applyLootSync(createLootView(), peopledSync({ carriedItemIds: ['npc-maya'] }));
+
+    expect(predictedCarriedItemIds(view)).toEqual(['npc-maya']);
+    expect(predictedSlotsUsed(view)).toBe(GAME.maxCarriedItems);
+  });
+
+  it('predicts carrying a person only out of empty hands', () => {
+    const empty = applyLootSync(createLootView(), peopledSync());
+    expect(predictedSlotsUsed(predictPickup(empty, REQUEST_ID, 'npc-maya'))).toBe(GAME.maxCarriedItems);
+
+    const holding = applyLootSync(createLootView(), peopledSync({ carriedItemIds: ['loot-soup'] }));
+    const refused = predictPickup(holding, REQUEST_ID, 'npc-maya');
+    expect(refused).toBe(holding);
+    expect(predictedSlotsUsed(refused)).toBe(1);
+  });
+
+  it('predicts no further pickup while carrying a person', () => {
+    const carrying = applyLootSync(createLootView(), peopledSync({ carriedItemIds: ['npc-maya'] }));
+    expect(predictPickup(carrying, REQUEST_ID, 'loot-soup')).toBe(carrying);
+  });
+
+  it('names the last thing picked up as the one a drop releases', () => {
+    const empty = applyLootSync(createLootView(), peopledSync());
+    expect(lastCarriedItemId(empty)).toBeUndefined();
+
+    const two = applyLootSync(createLootView(), peopledSync({ carriedItemIds: ['loot-soup', 'loot-water'] }));
+    expect(lastCarriedItemId(two)).toBe('loot-water');
+  });
+
+  it('treats an unknown catalog id as a single slot rather than free space', () => {
+    const stale = applyLootSync(createLootView(), peopledSync({
+      items: [{ id: 'loot-ghost', catalogId: 'from-a-newer-table', position: { x: 900, y: 600 }, available: false }],
+      carriedItemIds: ['loot-ghost'],
+    }));
+    expect(predictedSlotsUsed(stale)).toBe(1);
+  });
+});
+
+describe('client view of a dropped carryable', () => {
+  const dropped = (sequence: number, itemId: string, carriedCount: number): LootUpdate => ({
+    type: 'DROPPED',
+    sequence,
+    roomCode: 'ABC234',
+    playerId: 'player-1',
+    itemId,
+    position: { x: 880, y: 640 },
+    carriedCount,
+  });
+
+  it('makes a rival\'s dropped item visible again, at its new spot', () => {
+    const carried = applyLootUpdate(
+      applyLootSync(createLootView(), sync()),
+      pickedUpBy('player-1', 'loot-soup', 1),
+    );
+    expect(isItemVisible(carried, 'loot-soup')).toBe(false);
+
+    const view = applyLootUpdate(carried, dropped(2, 'loot-soup', 0));
+    expect(isItemVisible(view, 'loot-soup')).toBe(true);
+    expect(view.items['loot-soup']?.position).toEqual({ x: 880, y: 640 });
+    expect(view.carriedCounts['player-1']).toBe(0);
+  });
+
+  it('applies our own acknowledged drop to hands and to the floor', () => {
+    const carrying = applyLootSync(createLootView(), sync({ carriedItemIds: ['loot-soup', 'loot-water'] }));
+    const result: InteractionResult = {
+      outcome: 'DROPPED',
+      requestId: REQUEST_ID,
+      itemId: 'loot-water',
+      catalogId: 'bottled-water',
+      position: { x: 880, y: 640 },
+      carriedItemIds: ['loot-soup'],
+    };
+    const view = applyInteractionResult(carrying, result);
+
+    expect(predictedCarriedItemIds(view)).toEqual(['loot-soup']);
+    expect(view.items['loot-water']).toMatchObject({ available: true, position: { x: 880, y: 640 } });
+    expect(isItemVisible(view, 'loot-water')).toBe(true);
+  });
+
+  it('ignores a stale drop that arrives behind the sequence', () => {
+    const view = applyLootSync(createLootView(), sync({ sequence: 5 }));
+    expect(applyLootUpdate(view, dropped(4, 'loot-soup', 0))).toBe(view);
   });
 });

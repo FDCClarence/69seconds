@@ -49,6 +49,12 @@ The landing page is the login/register form; the authenticated home is a single 
 
 Rooms hold one to four distinct users in server memory. Codes are six readable characters, a disconnected member has a 15-second reconnection grace, and host status migrates to the remaining lowest slot after a host is actually removed. Starting requires every rostered player—including the host—to be connected and ready. Active rooms do not survive a server restart, and production must remain at one application replica until shared room infrastructure is added.
 
+## People in the store
+
+Survivors stand in the aisles on spawn locations the loot draw left free, and are recruited by carrying one to your own cart. A person fills all four carry slots, so picking one up needs empty hands, and the HUD shows them in the first slot with the other three crossed out. `Q` puts down whatever you picked up last — including a person — at wherever the server has you standing. Recruits appear in the tally by name under a `people` category.
+
+The roster is data: add a portrait to `apps/web/public/npc_images/`, then add an entry to `packages/shared/src/npc-table.ts` naming the file, its pixel size, and the figure's opaque bounding box inside it. That rect is what frames the person on the map and in the HUD at a consistent size, so it must match the file; `npm test -w @69-seconds/web` fails if it does not. `maxPerMatch` in the same file caps how many people a match places.
+
 ## Commands
 
 | Command | Purpose |

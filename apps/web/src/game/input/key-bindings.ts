@@ -1,4 +1,4 @@
-export type BindableAction = 'up' | 'down' | 'left' | 'right' | 'sprint' | 'interact' | 'shove';
+export type BindableAction = 'up' | 'down' | 'left' | 'right' | 'sprint' | 'interact' | 'shove' | 'drop';
 export type InputBindings = Readonly<Record<BindableAction, string>>;
 
 export const DEFAULT_INPUT_BINDINGS: InputBindings = Object.freeze({
@@ -9,10 +9,11 @@ export const DEFAULT_INPUT_BINDINGS: InputBindings = Object.freeze({
   sprint: 'ShiftLeft',
   interact: 'Space',
   shove: 'ControlLeft',
+  drop: 'KeyQ',
 });
 
 export const BINDABLE_ACTIONS: readonly BindableAction[] = [
-  'up', 'down', 'left', 'right', 'sprint', 'interact', 'shove',
+  'up', 'down', 'left', 'right', 'sprint', 'interact', 'shove', 'drop',
 ];
 
 const PHASER_CODES: Readonly<Record<string, number>> = {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { GAME, SPRINT } from './constants.js';
-import { LOOT_CATEGORIES } from './loot-table.js';
+import { CARRYABLE_CATEGORIES } from './carryable.js';
 
 export const gamePhaseSchema = z.enum(['LOBBY', 'COUNTDOWN', 'LOOTING', 'TALLY']);
 export const playerConnectionStateSchema = z.enum(['CONNECTED', 'RECONNECTING']);
@@ -54,7 +54,11 @@ export const cartPublicStateSchema = z.strictObject({
   itemIds: z.array(itemIdSchema),
 });
 
-/** Only the count of another player's carried items is public, never its contents. */
+/**
+ * Only how full another player's hands are is public, never what is in them.
+ * `count` is carry slots consumed rather than items held, so one carried person
+ * reports a full four and every client agrees that those hands are full.
+ */
 export const carriedCountSchema = z.strictObject({
   playerId: playerIdSchema,
   count: z.number().int().min(0).max(GAME.maxCarriedItems),
@@ -94,6 +98,16 @@ export const lootUpdateSchema = z.discriminatedUnion('type', [
     carriedCount: z.number().int().min(0).max(GAME.maxCarriedItems),
   }),
   z.strictObject({
+    type: z.literal('DROPPED'),
+    sequence: z.number().int().nonnegative(),
+    roomCode: roomCodeSchema,
+    playerId: playerIdSchema,
+    itemId: itemIdSchema,
+    /** Where it now lies: a dropped carryable stays wherever it was released. */
+    position: vector2Schema,
+    carriedCount: z.number().int().min(0).max(GAME.maxCarriedItems),
+  }),
+  z.strictObject({
     type: z.literal('RESTOCKED'),
     sequence: z.number().int().nonnegative(),
     roomCode: roomCodeSchema,
@@ -103,17 +117,18 @@ export const lootUpdateSchema = z.discriminatedUnion('type', [
   }),
 ]);
 
-export const lootCategorySchema = z.enum(LOOT_CATEGORIES);
+/** Loot categories plus `people`; a tally can hold both items and recruits. */
+export const carryableCategorySchema = z.enum(CARRYABLE_CATEGORIES);
 
 export const tallyItemSchema = z.strictObject({
   id: itemIdSchema,
   catalogId: z.string().min(1).max(64),
   label: z.string().min(1).max(64),
-  category: lootCategorySchema,
+  category: carryableCategorySchema,
 });
 
 export const tallyCategoryTotalSchema = z.strictObject({
-  category: lootCategorySchema,
+  category: carryableCategorySchema,
   count: z.number().int().nonnegative(),
 });
 
@@ -123,7 +138,7 @@ export const tallyPlayerResultSchema = z.strictObject({
   slot: z.number().int().min(0).max(GAME.maxPlayers - 1),
   isConnectedAtEnd: z.boolean(),
   items: z.array(tallyItemSchema).max(256),
-  categoryTotals: z.array(tallyCategoryTotalSchema).max(LOOT_CATEGORIES.length),
+  categoryTotals: z.array(tallyCategoryTotalSchema).max(CARRYABLE_CATEGORIES.length),
   totalItems: z.number().int().nonnegative(),
 });
 
@@ -135,7 +150,7 @@ export const matchTallySchema = z.strictObject({
   lootingEndedAtMs: z.number().int().nonnegative(),
   durationMs: z.literal(GAME.lootingDurationMs),
   players: z.array(tallyPlayerResultSchema).min(1).max(GAME.maxPlayers),
-  categoryTotals: z.array(tallyCategoryTotalSchema).max(LOOT_CATEGORIES.length),
+  categoryTotals: z.array(tallyCategoryTotalSchema).max(CARRYABLE_CATEGORIES.length),
   totalItems: z.number().int().nonnegative(),
 });
 
@@ -182,7 +197,7 @@ const requestIdSchema = z.string().uuid();
  */
 export const interactionRequestSchema = z.strictObject({
   requestId: requestIdSchema,
-  action: z.enum(['INTERACT', 'PICK_UP', 'DROP_OFF']),
+  action: z.enum(['INTERACT', 'PICK_UP', 'DROP_OFF', 'DROP']),
   targetId: z.string().min(1).max(128).optional(),
 });
 
@@ -196,6 +211,7 @@ export const interactionRejectionReasonSchema = z.enum([
   'UNKNOWN_TARGET',
   'ITEM_UNAVAILABLE',
   'HANDS_FULL',
+  'NEEDS_EMPTY_HANDS',
   'NOT_YOUR_CART',
   'NOTHING_CARRIED',
   'RATE_LIMITED',
@@ -219,6 +235,14 @@ export const interactionResultSchema = z.discriminatedUnion('outcome', [
     cartId: cartIdSchema,
     itemIds: z.array(itemIdSchema).min(1).max(GAME.maxCarriedItems),
     cartItemCount: z.number().int().nonnegative(),
+    carriedItemIds: z.array(itemIdSchema).max(GAME.maxCarriedItems),
+  }),
+  z.strictObject({
+    outcome: z.literal('DROPPED'),
+    requestId: requestIdSchema,
+    itemId: itemIdSchema,
+    catalogId: z.string().min(1).max(64),
+    position: vector2Schema,
     carriedItemIds: z.array(itemIdSchema).max(GAME.maxCarriedItems),
   }),
   z.strictObject({

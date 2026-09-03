@@ -1,8 +1,12 @@
 import {
   GAME,
   GROCERY_STORE_CARTS,
+  GROCERY_STORE_LOOT_LOCATIONS,
   LOOT_SPAWN_TABLE,
   LOOT,
+  NPC_CATALOG,
+  NPC_SPAWN_TABLE,
+  isNpcCatalogId,
   type CartId,
   type InteractionRequest,
   type InteractionResult,
@@ -316,8 +320,196 @@ describe('authoritative loot collection', () => {
   it('validates every generated production spawn and cart against the shared map', () => {
     const production = new MatchLootAuthority('ABC234', [{ id: 'player-0', slot: 0 }]);
     const sync = production.syncFor('player-0');
-    expect(sync.items).toHaveLength(LOOT_SPAWN_TABLE.itemsPerMatch);
+    const people = sync.items.filter((item) => isNpcCatalogId(item.catalogId));
+    expect(sync.items).toHaveLength(LOOT_SPAWN_TABLE.itemsPerMatch + people.length);
+    expect(people).toHaveLength(Math.min(NPC_SPAWN_TABLE.maxPerMatch, NPC_CATALOG.length));
     expect(sync.carts.map((cart) => cart.id)).toEqual(GROCERY_STORE_CARTS.map((cart) => cart.id as CartId));
     expect(sync.items.every((item) => item.available)).toBe(true);
+    // Every placement is a distinct map location, so nobody stands on an item.
+    expect(new Set(sync.items.map((item) => item.id)).size).toBe(sync.items.length);
+    expect(new Set(people.map((person) => person.catalogId)).size).toBe(people.length);
+    for (const item of sync.items) {
+      expect(GROCERY_STORE_LOOT_LOCATIONS.some((location) => location.id === item.id)).toBe(true);
+    }
+  });
+});
+
+describe('authoritative people', () => {
+  /** One person and one item, both in the open central floor beside the player. */
+  const npcSpawns = [{ id: 'npc-maya', catalogId: 'maya', x: 905, y: 600 }] as const;
+
+  function peopled(): MatchLootAuthority {
+    return new MatchLootAuthority(
+      'ABC234',
+      [{ id: 'player-0', slot: 0 }, { id: 'player-1', slot: 1 }],
+      { spawns, npcSpawns },
+    );
+  }
+
+  it('takes every carry slot for one person', () => {
+    const loot = peopled();
+    const result = loot.resolve(context({ request: request('PICK_UP', 'npc-maya') })).result;
+
+    expect(reasonOf(result)).toBe('PICKED_UP');
+    expect(loot.carriedItemIds('player-0')).toEqual(['npc-maya']);
+    expect(loot.syncFor('player-0').carriedCounts).toContainEqual({
+      playerId: 'player-0',
+      count: GAME.maxCarriedItems,
+    });
+  });
+
+  it('refuses a person to hands that are not empty, and says why', () => {
+    const loot = peopled();
+    loot.resolve(context({ request: request('PICK_UP', 'loot-soup') }));
+    const refused = loot.resolve(context({ request: request('PICK_UP', 'npc-maya') })).result;
+
+    expect(reasonOf(refused)).toBe('NEEDS_EMPTY_HANDS');
+    expect(loot.carriedItemIds('player-0')).toEqual(['loot-soup']);
+  });
+
+  it('refuses any further pickup while someone is being carried', () => {
+    const loot = peopled();
+    loot.resolve(context({ request: request('PICK_UP', 'npc-maya') }));
+    const refused = loot.resolve(context({ request: request('PICK_UP', 'loot-soup') })).result;
+
+    expect(reasonOf(refused)).toBe('HANDS_FULL');
+    expect(loot.carriedItemIds('player-0')).toEqual(['npc-maya']);
+  });
+
+  it('lets exactly one of two players carry the same person', () => {
+    const loot = peopled();
+    const first = loot.resolve(context({ playerId: 'player-0', request: request('PICK_UP', 'npc-maya') }));
+    const second = loot.resolve(context({ playerId: 'player-1', request: request('PICK_UP', 'npc-maya') }));
+
+    expect(reasonOf(first.result)).toBe('PICKED_UP');
+    expect(reasonOf(second.result)).toBe('ITEM_UNAVAILABLE');
+  });
+
+  it('recruits a carried person into the owning cart', () => {
+    const loot = peopled();
+    loot.resolve(context({ request: request('PICK_UP', 'npc-maya') }));
+    const deposit = loot.resolve(context({
+      position: cartPosition(CART),
+      request: request('DROP_OFF', CART.id),
+    }));
+
+    expect(reasonOf(deposit.result)).toBe('DEPOSITED');
+    expect(loot.cartItemIds(CART.id as CartId)).toEqual(['npc-maya']);
+    expect(loot.depositedItemsForSlot(0)).toEqual([{ id: 'npc-maya', catalogId: 'maya' }]);
+    expect(loot.carriedItemIds('player-0')).toEqual([]);
+  });
+
+  it('prefers the reachable own cart over an item the hands cannot take', () => {
+    // Standing at the cart, carrying a person, with an item within reach: an
+    // unaddressed interact must recruit rather than rejecting on the item.
+    const loot = new MatchLootAuthority(
+      'ABC234',
+      [{ id: 'player-0', slot: 0 }],
+      {
+        spawns: [{ id: 'loot-beside-cart', catalogId: 'canned-soup', x: CART.x + 20, y: CART.y }],
+        npcSpawns: [{ id: 'npc-maya', catalogId: 'maya', x: 900, y: 600 }],
+      },
+    );
+    loot.resolve(context({ request: request('PICK_UP', 'npc-maya') }));
+    const interact = loot.resolve(context({
+      position: cartPosition(CART),
+      request: request('INTERACT'),
+    }));
+
+    expect(reasonOf(interact.result)).toBe('DEPOSITED');
+    expect(loot.cartItemIds(CART.id as CartId)).toEqual(['npc-maya']);
+  });
+
+  it('still reports the honest reason when only an unfittable item is in reach', () => {
+    const loot = peopled();
+    loot.resolve(context({ request: request('PICK_UP', 'npc-maya') }));
+    const interact = loot.resolve(context({ request: request('INTERACT') })).result;
+
+    expect(reasonOf(interact)).toBe('HANDS_FULL');
+  });
+});
+
+describe('putting a carryable back down', () => {
+  const npcSpawns = [{ id: 'npc-maya', catalogId: 'maya', x: 905, y: 600 }] as const;
+
+  function peopled(): MatchLootAuthority {
+    return new MatchLootAuthority('ABC234', [{ id: 'player-0', slot: 0 }], { spawns, npcSpawns });
+  }
+
+  it('drops the most recent item at the player position the server owns', () => {
+    const loot = peopled();
+    loot.resolve(context({ request: request('PICK_UP', 'loot-soup') }));
+    loot.resolve(context({ request: request('PICK_UP', 'loot-water') }));
+    const dropped = loot.resolve(context({
+      position: { x: 880, y: 640 },
+      request: request('DROP'),
+    }));
+
+    expect(dropped.result.outcome).toBe('DROPPED');
+    expect(loot.carriedItemIds('player-0')).toEqual(['loot-soup']);
+    expect(dropped.update).toMatchObject({
+      type: 'DROPPED',
+      itemId: 'loot-water',
+      position: { x: 880, y: 640 },
+      carriedCount: 1,
+    });
+    const item = loot.syncFor('player-0').items.find((candidate) => candidate.id === 'loot-water');
+    expect(item).toMatchObject({ available: true, position: { x: 880, y: 640 } });
+  });
+
+  it('ignores a claimed position and uses the authoritative one', () => {
+    const loot = peopled();
+    loot.resolve(context({ request: request('PICK_UP', 'loot-soup') }));
+    // A modified client can name a target but never a coordinate: the request
+    // schema carries no position, so the drop lands where the server says.
+    const dropped = loot.resolve(context({
+      position: { x: 900, y: 600 },
+      request: { ...request('DROP'), targetId: 'loot-water' },
+    }));
+
+    expect(dropped.result).toMatchObject({ itemId: 'loot-soup', position: { x: 900, y: 600 } });
+  });
+
+  it('frees every slot when the dropped carryable is a person', () => {
+    const loot = peopled();
+    loot.resolve(context({ request: request('PICK_UP', 'npc-maya') }));
+    const dropped = loot.resolve(context({ request: request('DROP') }));
+
+    expect(dropped.update).toMatchObject({ type: 'DROPPED', carriedCount: 0 });
+    expect(loot.carriedItemIds('player-0')).toEqual([]);
+    // With hands free again, the same person can be picked straight back up.
+    expect(reasonOf(loot.resolve(context({ request: request('PICK_UP', 'npc-maya') })).result))
+      .toBe('PICKED_UP');
+  });
+
+  it('refuses a drop from empty hands', () => {
+    const loot = peopled();
+    const dropped = loot.resolve(context({ request: request('DROP') }));
+
+    expect(reasonOf(dropped.result)).toBe('NOTHING_CARRIED');
+    expect(dropped.update).toBeNull();
+  });
+
+  it('replays a resent drop instead of dropping a second thing', () => {
+    const loot = peopled();
+    loot.resolve(context({ request: request('PICK_UP', 'loot-soup') }));
+    loot.resolve(context({ request: request('PICK_UP', 'loot-water') }));
+    const once = request('DROP');
+    const first = loot.resolve(context({ request: once }));
+    const replay = loot.resolve(context({ request: once }));
+
+    expect(replay.replayed).toBe(true);
+    expect(replay.result).toEqual(first.result);
+    expect(replay.update).toBeNull();
+    expect(loot.carriedItemIds('player-0')).toEqual(['loot-soup']);
+  });
+
+  it('is closed outside the looting phase like every other interaction', () => {
+    const loot = peopled();
+    loot.resolve(context({ request: request('PICK_UP', 'loot-soup') }));
+    const dropped = loot.resolve(context({ phase: 'TALLY', request: request('DROP') }));
+
+    expect(reasonOf(dropped.result)).toBe('INVALID_PHASE');
+    expect(loot.carriedItemIds('player-0')).toEqual(['loot-soup']);
   });
 });

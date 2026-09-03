@@ -1,10 +1,10 @@
 import {
   GAME,
-  LOOT_CATEGORIES,
+  CARRYABLE_CATEGORIES,
   NETWORK,
   gameSnapshotSchema,
   initialSprintState,
-  lootCatalogEntry,
+  carryableEntry,
   matchTallySchema,
   movementAxis,
   normalizeMovementVector,
@@ -350,7 +350,7 @@ export class AuthoritativeRoomSimulation {
       .sort((left, right) => left.slot - right.slot)
       .map((participant) => {
         const items = this.loot.depositedItemsForSlot(participant.slot).map((item) => {
-          const catalog = lootCatalogEntry(item.catalogId);
+          const catalog = carryableEntry(item.catalogId);
           return { id: item.id, catalogId: item.catalogId, label: catalog.label, category: catalog.category };
         });
         return {
@@ -359,7 +359,7 @@ export class AuthoritativeRoomSimulation {
           slot: participant.slot,
           isConnectedAtEnd: this.players.get(participant.id)?.connected ?? false,
           items,
-          categoryTotals: LOOT_CATEGORIES.map((category) => ({
+          categoryTotals: CARRYABLE_CATEGORIES.map((category) => ({
             category,
             count: items.filter((item) => item.category === category).length,
           })).filter((total) => total.count > 0),
@@ -373,7 +373,7 @@ export class AuthoritativeRoomSimulation {
       lootingEndedAtMs,
       durationMs: GAME.lootingDurationMs,
       players,
-      categoryTotals: LOOT_CATEGORIES.map((category) => ({
+      categoryTotals: CARRYABLE_CATEGORIES.map((category) => ({
         category,
         count: players.reduce(
           (count, player) => count + player.items.filter((item) => item.category === category).length,

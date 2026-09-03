@@ -3,7 +3,14 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { ApiError, type AuthApi } from './api.js';
-import type { MatchTally, RoomPublicState } from '@69-seconds/shared';
+import {
+  GAME,
+  npcCatalogEntry,
+  npcImageUrl,
+  npcSpriteCrop,
+  type MatchTally,
+  type RoomPublicState,
+} from '@69-seconds/shared';
 import { RoomClientError, type RoomClient, type RoomClientListeners } from './room-client.js';
 import type { GroceryGameFactory } from './game/types.js';
 
@@ -218,9 +225,10 @@ describe('authentication application', () => {
       callbacks.onReady?.();
       callbacks.onInventoryChange?.({
         carriedItems: [
-          { id: 'loot-water', label: 'Bottled Water', shortLabel: 'WTR', color: '#6fb7d8', imageUrl: '/item_images/bottled-water.png', pending: false },
-          { id: 'loot-map', label: 'Map', shortLabel: 'MAP', color: '#c2b280', imageUrl: null, pending: true },
+          { id: 'loot-water', label: 'Bottled Water', shortLabel: 'WTR', color: '#6fb7d8', imageUrl: '/item_images/bottled-water.png', slotCost: 1, isNpc: false, crop: null, pending: false },
+          { id: 'loot-map', label: 'Map', shortLabel: 'MAP', color: '#c2b280', imageUrl: null, slotCost: 1, isNpc: false, crop: null, pending: true },
         ],
+        slotsUsed: 2,
         depositedCount: 2,
         synchronized: true,
       });
@@ -238,6 +246,47 @@ describe('authentication application', () => {
     expect(screen.getByTitle('Bottled Water').getAttribute('src')).toBe('/item_images/bottled-water.png');
     expect(screen.getByTitle('Map').textContent).toBe('?');
     expect(screen.getByRole('status').textContent).toContain('Picked up Bottled Water');
+  });
+
+  it('shows a carried person in the first slot and blocks the rest', async () => {
+    const maya = npcCatalogEntry('maya');
+    const bridgeFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.append(document.createElement('canvas'));
+      callbacks.onReady?.();
+      callbacks.onInventoryChange?.({
+        carriedItems: [{
+          id: 'npc-maya',
+          label: maya.name,
+          shortLabel: maya.shortLabel,
+          color: '#5fb0a8',
+          imageUrl: npcImageUrl(maya),
+          slotCost: GAME.maxCarriedItems,
+          isNpc: true,
+          crop: npcSpriteCrop(maya),
+          pending: false,
+        }],
+        slotsUsed: GAME.maxCarriedItems,
+        depositedCount: 0,
+        synchronized: true,
+      });
+      return { destroy: () => undefined };
+    };
+    const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
+      joinRoom: vi.fn().mockResolvedValue(startedLobby),
+    }), bridgeFactory);
+
+    expect(await screen.findByLabelText('Maya, carried person filling every slot, in carry slot 1')).toBeTruthy();
+    // The other three slots read as taken by her, not as empty and pickable.
+    for (const slot of [2, 3, 4]) {
+      expect(screen.getByLabelText(`Carry slot ${slot} taken up by Maya`).textContent).toContain('✕');
+    }
+    expect(screen.queryByLabelText('Empty carry slot 2')).toBeNull();
+    expect(screen.getByLabelText(`${GAME.maxCarriedItems} of ${GAME.maxCarriedItems} carry slots filled`)).toBeTruthy();
+    // Her portrait is positioned from the catalog crop, not stretched to the box.
+    const portrait = screen.getByTitle('Maya').querySelector('img');
+    expect(portrait?.getAttribute('src')).toBe(npcImageUrl(maya));
+    expect(portrait?.style.height).toBe(`${npcSpriteCrop(maya).heightPercent}%`);
   });
 
   it('renders the sprint bar and shove readiness through the narrow Phaser bridge', async () => {
@@ -316,7 +365,7 @@ describe('authentication application', () => {
       parent.addEventListener('keydown', nativeGameKeyDown as EventListener);
       parent.append(document.createElement('canvas'));
       callbacks.onReady?.();
-      callbacks.onInventoryChange?.({ carriedItems: [], depositedCount: 0, synchronized: true });
+      callbacks.onInventoryChange?.({ carriedItems: [], slotsUsed: 0, depositedCount: 0, synchronized: true });
       return { destroy: () => parent.removeEventListener('keydown', nativeGameKeyDown as EventListener) };
     };
     renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
@@ -401,7 +450,7 @@ describe('authentication application', () => {
     const failingFactory: GroceryGameFactory = (parent, callbacks) => {
       parent.append(document.createElement('canvas'));
       callbacks.onReady?.();
-      callbacks.onInventoryChange?.({ carriedItems: [], depositedCount: 0, synchronized: true });
+      callbacks.onInventoryChange?.({ carriedItems: [], slotsUsed: 0, depositedCount: 0, synchronized: true });
       callbacks.onFeedback?.({ kind: 'DESYNCHRONIZED', message: 'The server did not confirm that interaction' });
       return { destroy: () => undefined };
     };

@@ -34,6 +34,7 @@ Phase transitions are one-way for a match: `LOBBY → COUNTDOWN → LOOTING → 
 - `Shift`: sprint while held, limited by the server-owned stamina bar described below.
 - `Space`: context interaction, including pickup or deposit where valid.
 - `Ctrl`: request a shove against a valid nearby player, resolved as described below.
+- `Q`: put the most recently picked-up carryable back on the floor.
 - Movement and action input has no gameplay effect outside `LOOTING`.
 - The server validates speed, collision, timing, proximity, target availability, inventory capacity, cart ownership, and shove constraints. Clients may predict presentation but cannot decide outcomes.
 
@@ -161,16 +162,34 @@ is already standing inside a cart is pushed out of it rather than pinned there.
 ## Loot, inventory, and carts
 
 - Loot is shared: an available item can be successfully claimed by only one player.
-- A player may carry zero to four items. A fifth pickup is rejected.
+- Hands hold four carry slots. An ordinary item costs one slot; a fifth item is rejected.
 - Pickup requires an available target within interaction range during `LOOTING`.
 - Deposit requires a carried item and the player's assigned cart within interaction range during `LOOTING`.
 - Deposited items leave the carried inventory and become part of that player's authoritative tally.
 - Other players' carts cannot receive a player's deposit.
 - Simultaneous conflicts are resolved by server processing order; every client receives the resulting authoritative state.
+- The drop key puts the most recently picked-up carryable back on the floor, at the authoritative position of the player who dropped it. The request carries no coordinate, so a modified client cannot drop anything anywhere but where the server already has it standing.
+- An unaddressed interact prefers the player's own cart whenever the nearest carryable does not fit the hands, so full hands standing at their cart always deposit instead of being refused.
 
-Items retain their catalog labels and one of five presentation categories: food, weapons, medicine, entertainment, or misc. The tally counts deposited item instances rather than assigning future resource values or building later bunker mechanics.
+Items retain their catalog labels and one of five presentation categories: food, weapons, medicine, entertainment, or misc. Recruited people report a sixth, `people`. The tally counts deposited instances rather than assigning future resource values or building later bunker mechanics.
 
 Each match draws its loot at random. The store publishes 80 candidate spawn locations and the server places `itemsPerMatch` items across a random subset of them, so no two matches share a layout and most locations stay empty. Category floors are guaranteed first — food 25, entertainment 5, misc 5, medicine 3, weapons 3 — and every remaining slot is drawn from the whole catalog by spawn weight. Because 50 items come from a 16-entry catalog, duplicates are normal; each placed item still carries a unique id. Item rarity is a spawn-odds label only: it does not change an item's value or behaviour. Counts, floors, the item list, and the odds all live in `packages/shared/src/loot-table.ts`.
+
+## People (NPCs)
+
+Survivors stand in the aisles and are recruited by carrying them to a cart. They are carryables like loot — same authority, same pickup and deposit rules, same tally — separated only by what a person costs to carry and by how they are drawn.
+
+- A person costs every carry slot, so carrying one requires empty hands. Attempting it with anything held is rejected as `NEEDS_EMPTY_HANDS`, which is a distinct reason from `HANDS_FULL` because the fix is different: drop or bank what you hold.
+- While someone is being carried, every other pickup is rejected as `HANDS_FULL`.
+- A person is claimed by exactly one player, like any shared item; a second claimant receives `ITEM_UNAVAILABLE`.
+- The drop key puts a carried person down and frees all four slots at once, which is the only way to abandon a recruit before reaching a cart.
+- Depositing a carried person in the player's assigned cart recruits them. They appear in that player's tally by name, in the `people` category, counting as one entry rather than as the four slots they occupied.
+- A player who leaves mid-match releases a carried person the same way they release loot: back to the floor, available again.
+- People do not move, are not solid, and are unaffected by shoves. Being shoved never makes a player drop what they carry.
+
+A match places every distinct person that fits under the roster cap — `maxPerMatch` in `packages/shared/src/npc-table.ts`, currently 10 against an eight-person roster, so all eight appear. Nobody is ever placed twice. People are drawn onto the candidate spawn locations the loot draw left unused, so a person and an item never share a spot. The draw fails loudly rather than duplicating anyone or overflowing the free locations.
+
+Each person's art is a large hand-authored canvas with the figure inside a wide transparent margin, so the catalog carries the file's pixel size and the figure's bounding box. Both the on-map sprite and the HUD portrait are framed from that one rect, which is what keeps every person at a consistent on-screen size. Replacing a file with a different export size fails `apps/web/src/game/npc-art.test.ts` rather than silently mis-framing them.
 
 ## Timing and tally
 
@@ -194,7 +213,9 @@ Each match draws its loot at random. The store publishes 80 candidate spawn loca
 - A player at zero stamina still walks, and cannot sprint again until the re-engage threshold is reached.
 - A modified client cannot sprint past an empty bar, report its own stamina, or refill by reconnecting.
 - A shared loot item cannot appear in two inventories, including under simultaneous requests.
-- No inventory ever exceeds four carried items.
+- No inventory ever exceeds four carry slots, and a carried person occupies all four.
+- A person can only be picked up with empty hands, and only ever by one player.
+- A dropped carryable reappears where the server had the dropping player, never where a client claims.
 - Players can deposit only their carried loot in their assigned cart.
 - Shoves affect only valid in-range targets inside the facing cone, and obey the server cooldown, recovery window, and phase rules.
 - A shove never places a player inside a shelf, a cart, or outside the map, from any direction.

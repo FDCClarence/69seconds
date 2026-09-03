@@ -1,5 +1,6 @@
 import {
-  GAME,
+  canCarrySlots,
+  carryableSlotCost,
   type CartPublicState,
   type InteractionResult,
   type LootSync,
@@ -77,6 +78,11 @@ export function applyLootUpdate(view: LootView, update: LootUpdate): LootView {
     next.pendingPickups = view.pendingPickups.filter((pending) => pending.itemId !== update.itemId);
     return next;
   }
+  if (update.type === 'DROPPED') {
+    next.items = releaseAt(view.items, update.itemId, update.position);
+    next.pendingPickups = view.pendingPickups.filter((pending) => pending.itemId !== update.itemId);
+    return next;
+  }
   if (update.type === 'RESTOCKED') {
     next.items = setAvailability(view.items, update.itemIds, true);
     return next;
@@ -90,7 +96,8 @@ export function applyLootUpdate(view: LootView, update: LootUpdate): LootView {
 /** Hides the marker immediately; `applyInteractionResult` confirms or restores it. */
 export function predictPickup(view: LootView, requestId: string, itemId: string): LootView {
   if (!isItemVisible(view, itemId)) return view;
-  if (predictedCarriedItemIds(view).length >= GAME.maxCarriedItems) return view;
+  const slotCost = carryableSlotCost(view.items[itemId]?.catalogId ?? '');
+  if (!canCarrySlots(predictedSlotsUsed(view), slotCost)) return view;
   return { ...view, pendingPickups: [...view.pendingPickups, { requestId, itemId }] };
 }
 
@@ -100,6 +107,10 @@ export function applyInteractionResult(view: LootView, result: InteractionResult
 
   if (result.outcome === 'PICKED_UP') {
     next.items = setAvailability(view.items, [result.itemId], false);
+    return next;
+  }
+  if (result.outcome === 'DROPPED') {
+    next.items = releaseAt(view.items, result.itemId, result.position);
     return next;
   }
   if (result.outcome === 'DEPOSITED') {
@@ -131,16 +142,53 @@ export function visibleItems(view: LootView): readonly LootViewItem[] {
   return Object.values(view.items).filter((item) => isItemVisible(view, item.id));
 }
 
-/** Authoritative hands plus predicted pickups, which is what the HUD renders. */
+/**
+ * Authoritative hands plus predicted pickups, which is what the HUD renders.
+ * The list is truncated by carry slots rather than by item count, because one
+ * predicted person already fills every slot on their own.
+ */
 export function predictedCarriedItemIds(view: LootView): readonly string[] {
   const predicted = view.pendingPickups
     .map((pending) => pending.itemId)
     .filter((itemId) => !view.carriedItemIds.includes(itemId));
-  return [...view.carriedItemIds, ...predicted].slice(0, GAME.maxCarriedItems);
+  const carried: string[] = [];
+  let slotsUsed = 0;
+  for (const itemId of [...view.carriedItemIds, ...predicted]) {
+    const slotCost = carryableSlotCost(view.items[itemId]?.catalogId ?? '');
+    if (!canCarrySlots(slotsUsed, slotCost)) break;
+    slotsUsed += slotCost;
+    carried.push(itemId);
+  }
+  return carried;
+}
+
+/** Carry slots the predicted hands consume, out of the four a player has. */
+export function predictedSlotsUsed(view: LootView): number {
+  return predictedCarriedItemIds(view).reduce(
+    (slots, itemId) => slots + carryableSlotCost(view.items[itemId]?.catalogId ?? ''),
+    0,
+  );
+}
+
+/** The last carryable a player picked up, which is the one Q releases. */
+export function lastCarriedItemId(view: LootView): string | undefined {
+  const carried = predictedCarriedItemIds(view);
+  return carried[carried.length - 1];
 }
 
 export function cartById(view: LootView, cartId: string): CartPublicState | undefined {
   return view.carts.find((cart) => cart.id === cartId);
+}
+
+/** A dropped carryable becomes available again, at wherever it was released. */
+function releaseAt(
+  items: Readonly<Record<string, LootViewItem>>,
+  itemId: string,
+  position: Vector2,
+): Readonly<Record<string, LootViewItem>> {
+  const item = items[itemId];
+  if (!item) return items;
+  return { ...items, [itemId]: { ...item, position, available: true } };
 }
 
 function setAvailability(

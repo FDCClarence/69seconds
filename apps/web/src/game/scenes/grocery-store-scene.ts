@@ -1,6 +1,5 @@
 import Phaser from 'phaser';
 import {
-  GAME,
   LOOT,
   NETWORK,
   PLAYER_SPAWN_POSITIONS,
@@ -14,8 +13,15 @@ import {
   isWithinFacingCone,
   isWithinInteractionRadius,
   LOOT_CATALOG,
+  NPC_CATALOG,
+  canCarrySlots,
+  carryableSlotCost,
+  findCarryableEntry,
+  findNpcCatalogEntry,
   lootImageUrl,
   movementAxis,
+  npcImageUrl,
+  npcSpriteCrop,
   movementVelocity,
   normalizeMovementVector,
   resolveSprint,
@@ -23,10 +29,11 @@ import {
   type CartId,
   type ClientInput,
   type GamePhase,
+  type CarryableEntry,
   type GameSnapshot,
   type InteractionRequest,
   type InteractionResult,
-  type LootCatalogEntry,
+  type NpcCatalogEntry,
   type ShoveLanded,
   type ShoveRequest,
   type SprintState,
@@ -43,8 +50,10 @@ import {
   cartById,
   createLootView,
   isItemVisible,
+  lastCarriedItemId,
   predictPickup,
   predictedCarriedItemIds,
+  predictedSlotsUsed,
   rollbackPickup,
   visibleItems,
   type LootView,
@@ -67,17 +76,17 @@ const LOOT_MARKER_SIZE = 40;
 /** Small presentational lift that makes loot read as hovering over the floor. */
 const LOOT_HOVER_BASELINE = -3;
 const LOOT_HOVER_HEIGHT = 10;
-
 /**
- * A mid-deploy server can briefly hand the client a catalog id from a loot
- * table it hasn't picked up yet (or vice versa). `lootCatalogEntry` fails
- * loudly on purpose for the authoritative simulation, but the client can't
- * afford to crash the whole scene over one stale item, so it looks the id up
- * itself and lets callers fall back gracefully.
+ * On-map height of a person, in world pixels. Every NPC is drawn to this height
+ * from their trimmed art, so a wide sprite (Clarence and his wheelchair) reads
+ * as wide rather than as tall, and nobody's transparent margin sets their size.
  */
-function findLootCatalogEntry(catalogId: string): LootCatalogEntry | undefined {
-  return LOOT_CATALOG.find((candidate) => candidate.id === catalogId);
-}
+const NPC_SPRITE_HEIGHT = 54;
+/** People stand on the floor and only sway; they are not hovering pickups. */
+const NPC_HOVER_BASELINE = 0;
+const NPC_HOVER_HEIGHT = 2.5;
+/** Frame naming the figure inside an NPC file, excluding its blank margin. */
+const NPC_BODY_FRAME = 'body';
 
 interface LootPresentation {
   root: Phaser.GameObjects.Container;
@@ -85,11 +94,20 @@ interface LootPresentation {
   shadow: Phaser.GameObjects.Ellipse;
   bobPeriodMs: number;
   phaseOffset: number;
+  hoverBaseline: number;
+  hoverHeight: number;
+  /** Loot fakes height by shrinking its shadow as it rises; a person does not. */
+  liftsShadow: boolean;
 }
 
 /** Texture key for one catalog item's art. */
 function lootTextureKey(catalogId: string): string {
   return `loot-art-${catalogId}`;
+}
+
+/** Texture key for one person's art. */
+function npcTextureKey(catalogId: string): string {
+  return `npc-art-${catalogId}`;
 }
 
 export class GroceryStoreScene extends Phaser.Scene {
@@ -140,6 +158,10 @@ export class GroceryStoreScene extends Phaser.Scene {
       const url = lootImageUrl(entry);
       if (url) this.load.image(lootTextureKey(entry.id), url);
     }
+    // Portrait art is deliberately NOT loaded here. Preload gates the first
+    // frame, and the roster's hand-authored canvases are far heavier than item
+    // art, so fetching them up front would delay every match start. They load
+    // in the background instead; see `loadNpcArtInBackground`.
   }
 
   create(): void {
@@ -187,6 +209,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     this.subscribe(this.callbacks.subscribeLootUpdates?.((update) => {
       if (!this.belongsToRoom(update.roomCode)) return;
       this.lootView = applyLootUpdate(this.lootView, update);
+      if (update.type === 'DROPPED') this.repositionLootObject(update.itemId);
       this.refreshLootVisibility();
       this.publishInventory();
     }));
@@ -206,6 +229,7 @@ export class GroceryStoreScene extends Phaser.Scene {
       for (const unsubscribe of this.unsubscribes) unsubscribe();
     });
     this.callbacks.onReady?.();
+    this.loadNpcArtInBackground();
   }
 
   override update(time: number, deltaMs: number): void {
@@ -253,6 +277,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     const action = this.controls.readAction();
     if (this.phase === 'LOOTING' && action === 'INTERACT') void this.interact();
     if (this.phase === 'LOOTING' && action === 'SHOVE') void this.shove();
+    if (this.phase === 'LOOTING' && action === 'DROP') void this.dropCarried();
     this.updateInteractionPrompt();
     this.publishSprint();
   }
@@ -349,8 +374,14 @@ export class GroceryStoreScene extends Phaser.Scene {
       this.showFeedback({ kind: 'DESYNCHRONIZED', message: 'Waiting for the match loot state' });
       return;
     }
-    const item = this.nearestReachableItem();
-    const cart = item ? undefined : this.nearestReachableCart();
+    const nearestItem = this.nearestReachableItem();
+    // Same rule as the prompt: an item that cannot fit must not shadow the cart
+    // standing right next to it, or a player carrying a person could never
+    // recruit them. With no cart in reach it is still sent, so the server states
+    // the honest reason rather than the press doing nothing at all.
+    const fittingItem = nearestItem && this.fitsInHands(nearestItem) ? nearestItem : undefined;
+    const cart = fittingItem ? undefined : this.nearestReachableCart();
+    const item = fittingItem ?? (cart ? undefined : nearestItem);
     const request: InteractionRequest = {
       requestId: this.newRequestId(),
       action: item ? 'PICK_UP' : cart ? 'DROP_OFF' : 'INTERACT',
@@ -380,6 +411,50 @@ export class GroceryStoreScene extends Phaser.Scene {
     } finally {
       this.awaitingInteraction = false;
     }
+  }
+
+  /**
+   * Puts down the last thing picked up, wherever the player is standing. The
+   * server owns the landing spot, so this waits for the acknowledgement rather
+   * than predicting: a marker appearing at your feet and then vanishing reads
+   * far worse than a marker appearing a moment late.
+   */
+  private async dropCarried(): Promise<void> {
+    if (!this.callbacks.requestInteraction || this.awaitingInteraction) return;
+    if (!this.lootView.synchronized) {
+      this.showFeedback({ kind: 'DESYNCHRONIZED', message: 'Waiting for the match loot state' });
+      return;
+    }
+    if (lastCarriedItemId(this.lootView) === undefined) {
+      this.showFeedback({ kind: 'NOTHING_CARRIED', message: 'Nothing to put down' });
+      return;
+    }
+    const request: InteractionRequest = { requestId: this.newRequestId(), action: 'DROP' };
+
+    this.awaitingInteraction = true;
+    try {
+      const result = await this.callbacks.requestInteraction(request);
+      if (this.stopped) return;
+      this.lootView = applyInteractionResult(this.lootView, result);
+      if (result.outcome === 'DROPPED') this.repositionLootObject(result.itemId);
+      this.refreshLootVisibility();
+      this.publishInventory();
+      this.showFeedback(this.feedbackFor(result));
+    } catch {
+      if (this.stopped) return;
+      this.showFeedback({ kind: 'DESYNCHRONIZED', message: 'The server did not confirm that drop' });
+    } finally {
+      this.awaitingInteraction = false;
+    }
+  }
+
+  /** Moves one marker to the position the server just gave it. */
+  private repositionLootObject(itemId: string): void {
+    const item = this.lootView.items[itemId];
+    const presentation = this.lootObjects.get(itemId);
+    if (!item || !presentation) return;
+    presentation.root.setPosition(item.position.x, item.position.y);
+    presentation.root.setDepth(1_000 + item.position.y - (presentation.liftsShadow ? 4 : 0));
   }
 
   /**
@@ -522,7 +597,8 @@ export class GroceryStoreScene extends Phaser.Scene {
       const lift = reducedMotion
         ? 0
         : (Math.sin((time / lootObject.bobPeriodMs) * Math.PI * 2 + lootObject.phaseOffset) + 1) / 2;
-      lootObject.hoverLayer.y = LOOT_HOVER_BASELINE - LOOT_HOVER_HEIGHT * lift;
+      lootObject.hoverLayer.y = lootObject.hoverBaseline - lootObject.hoverHeight * lift;
+      if (!lootObject.liftsShadow) continue;
       lootObject.shadow
         .setScale(Phaser.Math.Linear(1, 0.68, lift), Phaser.Math.Linear(1, 0.62, lift))
         .setAlpha(Phaser.Math.Linear(0.42, 0.2, lift));
@@ -534,12 +610,64 @@ export class GroceryStoreScene extends Phaser.Scene {
     return assignedCartIdForSlot(slot);
   }
 
+  /**
+   * Fetches portrait art after the match is already playable. People are drawn
+   * as named placeholder chips until their file lands, then swapped in place —
+   * a person visible immediately and illustrated a moment later beats a match
+   * that will not start until megabytes of art arrive.
+   */
+  private loadNpcArtInBackground(): void {
+    const pending = NPC_CATALOG.filter((entry) => !this.textures.exists(npcTextureKey(entry.id)));
+    if (pending.length === 0) {
+      this.registerNpcBodyFrames();
+      return;
+    }
+    for (const entry of pending) this.load.image(npcTextureKey(entry.id), npcImageUrl(entry));
+    this.load.once(Phaser.Loader.Events.COMPLETE, () => {
+      if (this.stopped) return;
+      this.registerNpcBodyFrames();
+      this.redrawPeople();
+    });
+    this.load.start();
+  }
+
+  /** Rebuilds only the people, leaving every item presentation untouched. */
+  private redrawPeople(): void {
+    for (const [itemId, presentation] of [...this.lootObjects]) {
+      const item = this.lootView.items[itemId];
+      if (!item || !findNpcCatalogEntry(item.catalogId)) continue;
+      presentation.root.destroy();
+      this.lootObjects.delete(itemId);
+      const replacement = this.createLootObject(itemId, item.catalogId, item.position.x, item.position.y);
+      if (replacement) this.lootObjects.set(itemId, replacement);
+    }
+    this.refreshLootVisibility();
+  }
+
+  /**
+   * Defines a trimmed frame per NPC texture so every person can be drawn to one
+   * height regardless of how much blank canvas their source file carries. The
+   * rect is catalog data, so a portrait in the HUD crops to exactly the same
+   * figure this frame shows on the map.
+   */
+  private registerNpcBodyFrames(): void {
+    for (const entry of NPC_CATALOG) {
+      const key = npcTextureKey(entry.id);
+      if (!this.textures.exists(key)) continue;
+      const texture = this.textures.get(key);
+      if (texture.has(NPC_BODY_FRAME)) continue;
+      texture.add(NPC_BODY_FRAME, 0, entry.content.x, entry.content.y, entry.content.width, entry.content.height);
+    }
+  }
+
   private createLootObject(id: string, catalogId: string, x: number, y: number): LootPresentation | undefined {
-    const catalog = findLootCatalogEntry(catalogId);
+    const catalog = findCarryableEntry(catalogId);
     if (!catalog) {
-      console.warn(`Skipping unrecognized loot item "${catalogId}" — client and server catalogs disagree.`);
+      console.warn(`Skipping unrecognized carryable "${catalogId}" — client and server catalogs disagree.`);
       return undefined;
     }
+    const npc = catalog.isNpc ? findNpcCatalogEntry(catalogId) : undefined;
+    if (npc) return this.createNpcObject(id, npc, x, y);
     const shadow = this.add.ellipse(0, LOOT_MARKER_SIZE / 2 - 2, LOOT_MARKER_SIZE * 0.72, 9, 0x0d1a1c, 0.42);
     const hoveringParts: Phaser.GameObjects.GameObject[] = [];
     const textureKey = lootTextureKey(catalog.id);
@@ -585,6 +713,52 @@ export class GroceryStoreScene extends Phaser.Scene {
       shadow,
       bobPeriodMs: Phaser.Math.Between(2_500, 3_200),
       phaseOffset: Phaser.Math.FloatBetween(0, Math.PI * 2),
+      hoverBaseline: LOOT_HOVER_BASELINE,
+      hoverHeight: LOOT_HOVER_HEIGHT,
+      liftsShadow: true,
+    };
+  }
+
+  /**
+   * A person standing in an aisle: drawn from their trimmed frame to a fixed
+   * height, planted on the floor rather than hovering, and named, because
+   * deciding whether Bryne is worth a whole inventory needs the name visible
+   * before you commit to the walk back.
+   */
+  private createNpcObject(id: string, entry: NpcCatalogEntry, x: number, y: number): LootPresentation {
+    const textureKey = npcTextureKey(entry.id);
+    const drawn = this.textures.exists(textureKey) && this.textures.get(textureKey).has(NPC_BODY_FRAME);
+    const width = drawn
+      ? NPC_SPRITE_HEIGHT * (entry.content.width / entry.content.height)
+      : NPC_SPRITE_HEIGHT * 0.5;
+    const shadow = this.add.ellipse(0, 1, Math.max(width * 0.62, 20), 11, 0x0d1a1c, 0.34);
+    const standingParts: Phaser.GameObjects.GameObject[] = drawn
+      ? [this.add.image(0, -NPC_SPRITE_HEIGHT / 2, textureKey, NPC_BODY_FRAME)
+          .setDisplaySize(width, NPC_SPRITE_HEIGHT)]
+      : [
+        this.add.rectangle(0, -NPC_SPRITE_HEIGHT / 2, width, NPC_SPRITE_HEIGHT, entry.color)
+          .setStrokeStyle(3, 0x213a37),
+        this.add.text(0, -NPC_SPRITE_HEIGHT / 2, entry.shortLabel, {
+          color: '#213a37', fontFamily: 'monospace', fontSize: '12px', fontStyle: 'bold',
+        }).setOrigin(0.5),
+      ];
+    standingParts.push(this.add.text(0, -NPC_SPRITE_HEIGHT - 10, entry.name.toUpperCase(), {
+      color: '#fff8dd', backgroundColor: '#2c4a3f', fontFamily: 'monospace',
+      fontSize: '9px', fontStyle: 'bold', padding: { x: 4, y: 2 },
+    }).setOrigin(0.5));
+
+    const hoverLayer = this.add.container(0, NPC_HOVER_BASELINE, standingParts);
+    const root = this.add.container(x, y, [shadow, hoverLayer]).setName(id).setDepth(1_000 + y);
+    return {
+      root,
+      hoverLayer,
+      shadow,
+      // Slower than loot, so a person reads as breathing rather than bobbing.
+      bobPeriodMs: Phaser.Math.Between(3_400, 4_600),
+      phaseOffset: Phaser.Math.FloatBetween(0, Math.PI * 2),
+      hoverBaseline: NPC_HOVER_BASELINE,
+      hoverHeight: NPC_HOVER_HEIGHT,
+      liftsShadow: false,
     };
   }
 
@@ -607,6 +781,20 @@ export class GroceryStoreScene extends Phaser.Scene {
       .sort((left, right) => this.distanceTo(left) - this.distanceTo(right))[0];
   }
 
+  /** Mirrors the server's slot rule, so the prompt never offers a doomed pickup. */
+  private fitsInHands(item: LootViewItem): boolean {
+    return canCarrySlots(predictedSlotsUsed(this.lootView), carryableSlotCost(item.catalogId));
+  }
+
+  /** The person in this player's arms, when they are carrying one. */
+  private carriedPerson(): CarryableEntry | undefined {
+    for (const itemId of predictedCarriedItemIds(this.lootView)) {
+      const entry = findCarryableEntry(this.lootView.items[itemId]?.catalogId ?? '');
+      if (entry?.isNpc) return entry;
+    }
+    return undefined;
+  }
+
   private playerPosition(): { x: number; y: number } | undefined {
     return this.player ? { x: this.player.x, y: this.player.y } : undefined;
   }
@@ -621,21 +809,40 @@ export class GroceryStoreScene extends Phaser.Scene {
       this.setPrompt('Synchronizing the store with the server');
       return;
     }
-    const carried = predictedCarriedItemIds(this.lootView).length;
+    const carried = predictedCarriedItemIds(this.lootView);
+    const slotsUsed = predictedSlotsUsed(this.lootView);
+    const person = this.carriedPerson();
     const item = this.nearestReachableItem();
-    if (item) {
-      const catalog = findLootCatalogEntry(item.catalogId);
-      const full = carried >= GAME.maxCarriedItems;
-      this.setPrompt(full
-        ? 'HANDS FULL · deposit at your cart'
+    // The cart wins whenever the nearest item cannot fit, because hands that
+    // full are hands on their way to deposit, not hands that want a rejection.
+    if (item && this.fitsInHands(item)) {
+      const catalog = findCarryableEntry(item.catalogId);
+      this.setPrompt(catalog?.isNpc
+        ? `${bindingLabel(this.bindings.interact)} · carry ${catalog.label} to your cart`
         : `${bindingLabel(this.bindings.interact)} · pick up ${catalog?.label ?? 'item'}`);
       return;
     }
     const cart = this.nearestReachableCart();
     if (cart) {
       if (cart.id !== this.assignedCartId()) this.setPrompt(`WRONG CART · ${cartLabel(cart.id)} is not assigned to you`);
-      else if (carried === 0) this.setPrompt('YOUR CART · collect an item first');
-      else this.setPrompt(`${bindingLabel(this.bindings.interact)} · deposit ${carried} item(s) in your cart`);
+      else if (carried.length === 0) this.setPrompt('YOUR CART · collect an item first');
+      else if (person) this.setPrompt(`${bindingLabel(this.bindings.interact)} · recruit ${person.label} into your cart`);
+      else this.setPrompt(`${bindingLabel(this.bindings.interact)} · deposit ${carried.length} item(s) in your cart`);
+      return;
+    }
+    if (item) {
+      const catalog = findCarryableEntry(item.catalogId);
+      if (person) {
+        this.setPrompt(`CARRYING ${person.label.toUpperCase()} · ${bindingLabel(this.bindings.drop)} puts them down`);
+      } else if (catalog?.isNpc && slotsUsed > 0) {
+        this.setPrompt(`HANDS TOO FULL FOR ${catalog.label.toUpperCase()} · bank your loot first`);
+      } else {
+        this.setPrompt('HANDS FULL · deposit at your cart');
+      }
+      return;
+    }
+    if (person) {
+      this.setPrompt(`CARRYING ${person.label.toUpperCase()} · take them to your cart`);
       return;
     }
     this.setPrompt('Explore the aisles · the server owns every shelf');
@@ -657,19 +864,24 @@ export class GroceryStoreScene extends Phaser.Scene {
     const carriedItems = predictedCarriedItemIds(this.lootView).flatMap((itemId) => {
       const item = this.lootView.items[itemId];
       if (!item) return [];
-      const catalog = findLootCatalogEntry(item.catalogId);
+      const catalog = findCarryableEntry(item.catalogId);
       if (!catalog) return [];
+      const npc = catalog.isNpc ? findNpcCatalogEntry(item.catalogId) : undefined;
       return [{
         id: item.id,
         label: catalog.label,
         shortLabel: catalog.shortLabel,
-        imageUrl: lootImageUrl(catalog),
+        imageUrl: catalog.imageUrl,
         color: `#${catalog.color.toString(16).padStart(6, '0')}`,
+        slotCost: catalog.slotCost,
+        isNpc: catalog.isNpc,
+        crop: npc ? npcSpriteCrop(npc) : null,
         pending: pendingIds.has(item.id),
       }];
     });
     this.callbacks.onInventoryChange?.({
       carriedItems,
+      slotsUsed: predictedSlotsUsed(this.lootView),
       depositedCount: cartById(this.lootView, this.assignedCartId())?.itemIds.length ?? 0,
       synchronized: this.lootView.synchronized,
     });
@@ -678,11 +890,29 @@ export class GroceryStoreScene extends Phaser.Scene {
   private feedbackFor(result: InteractionResult): GameFeedback {
     if (result.outcome === 'PICKED_UP') {
       this.playPickupEffect();
-      return { kind: 'PICKED_UP', message: `Picked up ${findLootCatalogEntry(result.catalogId)?.label ?? 'item'}` };
+      const entry = findCarryableEntry(result.catalogId);
+      return {
+        kind: 'PICKED_UP',
+        message: entry?.isNpc
+          ? `Carrying ${entry.label} · take them to your cart`
+          : `Picked up ${entry?.label ?? 'item'}`,
+      };
     }
     if (result.outcome === 'DEPOSITED') {
       this.playDepositEffect();
-      return { kind: 'DEPOSITED', message: `Deposited ${result.itemIds.length} item(s) · cart holds ${result.cartItemCount}` };
+      const recruits = result.itemIds
+        .map((itemId) => findCarryableEntry(this.lootView.items[itemId]?.catalogId ?? ''))
+        .filter((entry) => entry?.isNpc)
+        .map((entry) => entry!.label);
+      return {
+        kind: 'DEPOSITED',
+        message: recruits.length > 0
+          ? `Recruited ${recruits.join(', ')} · cart holds ${result.cartItemCount}`
+          : `Deposited ${result.itemIds.length} item(s) · cart holds ${result.cartItemCount}`,
+      };
+    }
+    if (result.outcome === 'DROPPED') {
+      return { kind: 'DROPPED', message: `Put down ${findCarryableEntry(result.catalogId)?.label ?? 'item'}` };
     }
     return { kind: result.reason, message: result.message };
   }

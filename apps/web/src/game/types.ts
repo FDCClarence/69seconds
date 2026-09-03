@@ -1,5 +1,5 @@
 /** Real gameplay actions a key press can request. */
-export type GameAction = 'INTERACT' | 'SHOVE';
+export type GameAction = 'INTERACT' | 'SHOVE' | 'DROP';
 
 export interface CarryHudItem {
   id: string;
@@ -8,12 +8,22 @@ export interface CarryHudItem {
   color: string;
   /** Item art, or null when this item has none yet and renders a `?` chip. */
   imageUrl: string | null;
+  /** Carry slots this one occupies: 1 for loot, every slot for a person. */
+  slotCost: number;
+  isNpc: boolean;
+  /**
+   * How to crop `imageUrl` down to the figure for an NPC whose source art sits
+   * inside a large transparent margin; null for ordinary item art.
+   */
+  crop: NpcSpriteCrop | null;
   /** True while this slot is an unacknowledged prediction. */
   pending: boolean;
 }
 
 export interface CarryHudState {
   carriedItems: readonly CarryHudItem[];
+  /** Slots the carried set consumes, which is what makes hands "full". */
+  slotsUsed: number;
   depositedCount: number;
   synchronized: boolean;
 }
@@ -35,6 +45,7 @@ export interface SprintHudState {
 export type GameFeedbackKind =
   | 'PICKED_UP'
   | 'DEPOSITED'
+  | 'DROPPED'
   | InteractionRejectionReason
   | ShoveRejectionReason
   | 'SHOVE_LANDED'
@@ -91,6 +102,7 @@ import type {
   LootSync,
   LootUpdate,
   MovementInput,
+  NpcSpriteCrop,
   PublicPlayerState,
   ShoveLanded,
   ShoveRejectionReason,

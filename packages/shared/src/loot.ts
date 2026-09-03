@@ -26,8 +26,12 @@ export interface LootSpawnPoint extends LootSpawnLocation {
 
 export type CartId = `cart-${number}`;
 
+export function findLootCatalogEntry(catalogId: string): LootCatalogEntry | undefined {
+  return LOOT_CATALOG.find((candidate) => candidate.id === catalogId);
+}
+
 export function lootCatalogEntry(catalogId: string): LootCatalogEntry {
-  const entry = LOOT_CATALOG.find((candidate) => candidate.id === catalogId);
+  const entry = findLootCatalogEntry(catalogId);
   if (!entry) throw new Error(`Unknown loot catalog id: ${catalogId}`);
   return entry;
 }

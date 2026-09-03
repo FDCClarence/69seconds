@@ -1,9 +1,7 @@
 import {
+  CARRYABLE_CATEGORY_LABELS,
   GAME,
-  LOOT_CATALOG,
-  lootImageUrl,
   roomCodeSchema,
-  type LootCategory,
   type MatchTally,
   type PublicUser,
   type RoomPublicState,
@@ -11,6 +9,7 @@ import {
 } from '@69-seconds/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { authApi, ApiError, type AuthApi } from './api.js';
+import { CarryableArtById } from './carryable-art.js';
 import { MatchGame } from './game/react/MatchGame.js';
 import { gameAudio } from './game/audio/game-audio.js';
 import type { GroceryGameFactory } from './game/types.js';
@@ -590,23 +589,6 @@ function Lobby({ code, room, matchTally, user, connection, networkError, onDismi
   </main>;
 }
 
-/** Deposited-item thumbnail, falling back to a `?` chip for unillustrated or unrecognized items. */
-function TallyItemArt({ catalogId, label }: { catalogId: string; label: string }) {
-  const entry = LOOT_CATALOG.find((candidate) => candidate.id === catalogId);
-  const url = entry ? lootImageUrl(entry) : null;
-  return url
-    ? <img className="tally-art" src={url} alt="" title={label} />
-    : <b className="tally-art is-placeholder" style={{ backgroundColor: `#${(entry?.color ?? 0x7a8b99).toString(16).padStart(6, '0')}` }} title={label}>?</b>;
-}
-
-const CATEGORY_LABELS: Record<LootCategory, string> = {
-  food: 'Food',
-  weapons: 'Weapons',
-  medicine: 'Medicine',
-  entertainment: 'Entertainment',
-  misc: 'Misc',
-};
-
 function groupTallyItems(items: TallyItem[]): { catalogId: string; label: string; quantity: number }[] {
   const groups = new Map<string, { catalogId: string; label: string; quantity: number }>();
   for (const item of items) {
@@ -648,7 +630,7 @@ function TallyScreen({ room, result, user, onLeave, onLogout }: {
       </div> : <>
         <section className="tally-categories" aria-label="Match category totals">
           {result.categoryTotals.length > 0 ? result.categoryTotals.map((total) => <div key={total.category}>
-            <span>{CATEGORY_LABELS[total.category]}</span><strong>{total.count}</strong>
+            <span>{CARRYABLE_CATEGORY_LABELS[total.category]}</span><strong>{total.count}</strong>
           </div>) : <p>No items reached a cart before the deadline.</p>}
         </section>
         <ol className="tally-players" aria-label="Player results">
@@ -660,13 +642,13 @@ function TallyScreen({ room, result, user, onLeave, onLogout }: {
             <p className="tally-connection">{player.isConnectedAtEnd ? 'Present at the buzzer' : 'Disconnected at the buzzer'}</p>
             {player.items.length > 0 ? <ul className="tally-items">
               {groupTallyItems(player.items).map((group) => <li key={group.catalogId}>
-                <TallyItemArt catalogId={group.catalogId} label={group.label} />
+                <CarryableArtById catalogId={group.catalogId} label={group.label} className="tally-art" />
                 <span>{group.label}</span>
                 {group.quantity > 1 && <strong className="tally-item-quantity">{group.quantity}x</strong>}
               </li>)}
             </ul> : <p className="tally-empty">No deposited items</p>}
             {player.categoryTotals.length > 0 && <p className="tally-player-categories">
-              {player.categoryTotals.map((total) => `${CATEGORY_LABELS[total.category]} ${total.count}`).join(' · ')}
+              {player.categoryTotals.map((total) => `${CARRYABLE_CATEGORY_LABELS[total.category]} ${total.count}`).join(' · ')}
             </p>}
           </li>)}
         </ol>

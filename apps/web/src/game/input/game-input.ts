@@ -15,6 +15,7 @@ interface GameplayKeys {
   sprint: Phaser.Input.Keyboard.Key;
   interact: Phaser.Input.Keyboard.Key;
   shove: Phaser.Input.Keyboard.Key;
+  drop: Phaser.Input.Keyboard.Key;
 }
 
 /**
@@ -58,6 +59,7 @@ export class GameInput {
   readAction(): GameAction | null {
     if (Phaser.Input.Keyboard.JustDown(this.keys.interact)) return 'INTERACT';
     if (Phaser.Input.Keyboard.JustDown(this.keys.shove)) return 'SHOVE';
+    if (Phaser.Input.Keyboard.JustDown(this.keys.drop)) return 'DROP';
     return null;
   }
 

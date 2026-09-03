@@ -1,3 +1,4 @@
+import { canCarrySlots } from './carryable.js';
 import { GAME, SHOVE, SPRINT } from './constants.js';
 import {
   GROCERY_STORE_BOUNDS,
@@ -11,8 +12,13 @@ export function isGameplayActive(phase: GamePhase): boolean {
   return phase === 'LOOTING';
 }
 
-export function canCarryItem(currentItemCount: number): boolean {
-  return Number.isInteger(currentItemCount) && currentItemCount >= 0 && currentItemCount < GAME.maxCarriedItems;
+/**
+ * Room for one more single-slot item. Hands are measured in carry slots rather
+ * than items, because a carried person occupies all of them; see
+ * {@link canCarrySlots} for the general rule.
+ */
+export function canCarryItem(usedSlots: number): boolean {
+  return canCarrySlots(usedSlots, 1);
 }
 
 export function normalizeMovementVector(vector: Vector2): Vector2 {

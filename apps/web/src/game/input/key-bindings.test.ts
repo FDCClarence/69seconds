@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_INPUT_BINDINGS, bindingLabel, capturedKeyCodes, rebindAction } from './key-bindings.js';
+import {
+  BINDABLE_ACTIONS,
+  DEFAULT_INPUT_BINDINGS,
+  bindingLabel,
+  capturedKeyCodes,
+  rebindAction,
+} from './key-bindings.js';
 
 describe('central gameplay bindings', () => {
   it('swaps conflicts instead of leaving an action unreachable', () => {
@@ -16,6 +22,12 @@ describe('central gameplay bindings', () => {
   it('exposes readable labels and unique Phaser capture codes', () => {
     expect(bindingLabel('ControlLeft')).toBe('Ctrl');
     expect(bindingLabel('KeyQ')).toBe('Q');
-    expect(new Set(capturedKeyCodes(DEFAULT_INPUT_BINDINGS)).size).toBe(7);
+    expect(new Set(capturedKeyCodes(DEFAULT_INPUT_BINDINGS)).size).toBe(BINDABLE_ACTIONS.length);
+  });
+
+  it('binds every action, including putting a carried item down', () => {
+    expect(DEFAULT_INPUT_BINDINGS.drop).toBe('KeyQ');
+    for (const action of BINDABLE_ACTIONS) expect(DEFAULT_INPUT_BINDINGS[action]).toBeTruthy();
+    expect(Object.keys(DEFAULT_INPUT_BINDINGS).sort()).toEqual([...BINDABLE_ACTIONS].sort());
   });
 });
