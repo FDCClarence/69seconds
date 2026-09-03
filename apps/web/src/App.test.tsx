@@ -5,14 +5,19 @@ import { App } from './App.js';
 import { ApiError, type AuthApi } from './api.js';
 import {
   GAME,
+  SURVIVAL,
+  SURVIVAL_CHARACTER_DEFAULTS,
   npcCatalogEntry,
   npcImageUrl,
   npcSpriteCrop,
   type MatchTally,
   type RoomPublicState,
+  type SurvivalState,
 } from '@69-seconds/shared';
 import { RoomClientError, type RoomClient, type RoomClientListeners } from './room-client.js';
 import type { GroceryGameFactory } from './game/types.js';
+import { forgetDayTransitions } from './survival/day-transition-memory.js';
+import { DAY_TRANSITION_TOTAL_MS } from './survival/DayTransition.js';
 
 const player = {
   id: '477aa564-8b3f-4fa0-bf2c-c523add8d9ce',
@@ -495,6 +500,135 @@ describe('authentication application', () => {
     expect(screen.queryByRole('application')).toBeNull();
     expect(destroy).toHaveBeenCalledWith(true);
     expect(screen.queryByRole('heading', { name: 'Time’s up.' })).toBeNull();
+  });
+
+  it('announces the authoritative survival day, then reveals the screen without telling the server', async () => {
+    forgetDayTransitions();
+    let listeners: RoomClientListeners | undefined;
+    const started: RoomPublicState = { ...lobby, phase: 'LOOTING', phaseEndsAtMs: 70_000 };
+    const survivalDeadline = 70_000 + GAME.survivalDurationMs;
+    const survivalRoom: RoomPublicState = { ...started, phase: 'SURVIVAL', phaseEndsAtMs: survivalDeadline };
+    // The server's own state. Day 1 is what it committed; the client counts none.
+    const survivalState: SurvivalState = {
+      stateId: 'survival:ABC234:70000',
+      roomCode: 'ABC234',
+      dayNumber: SURVIVAL.firstDayNumber,
+      startedAtMs: 70_000,
+      households: [{
+        playerId: player.id,
+        displayName: player.username,
+        slot: 0,
+        characters: [{
+          id: player.id,
+          displayName: player.username,
+          kind: 'MAIN',
+          catalogId: null,
+          isAlive: true,
+          stats: SURVIVAL_CHARACTER_DEFAULTS.stats,
+          dailyNutritionCost: SURVIVAL_CHARACTER_DEFAULTS.dailyNutritionCost,
+          dailyHydrationCost: SURVIVAL_CHARACTER_DEFAULTS.dailyHydrationCost,
+        }],
+        inventory: [],
+      }],
+    };
+    const rooms = roomClientStub({
+      subscribe: vi.fn((next) => {
+        listeners = next;
+        next.onConnection('CONNECTED');
+        return () => undefined;
+      }),
+      joinRoom: vi.fn().mockResolvedValue(started),
+    });
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
+    await screen.findByRole('application', { name: /grocery store/i });
+
+    // Fake timers from here, so the two-second overlay can be run out.
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        listeners?.onRoom(survivalRoom);
+        listeners?.onSurvivalState?.(survivalState);
+      });
+      expect(screen.getByRole('heading', { name: 'Survival phase' })).toBeTruthy();
+      // The rendered day is the one the server sent, not a client-side 1.
+      expect(screen.getByRole('status').textContent).toBe(`Day #${survivalState.dayNumber}`);
+      expect(document.querySelector('.day-transition')?.getAttribute('data-day')).toBe('1');
+
+      act(() => { vi.advanceTimersByTime(DAY_TRANSITION_TOTAL_MS); });
+      // The overlay fades away and the survival screen underneath is revealed.
+      expect(document.querySelector('.day-transition')).toBeNull();
+      expect(screen.getByRole('heading', { name: 'Survival phase' })).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    // Presentational only: finishing the animation sends nothing, and the day's
+    // server-owned deadline is still exactly the one the server published.
+    expect(rooms.setReady).not.toHaveBeenCalled();
+    expect(rooms.startMatch).not.toHaveBeenCalled();
+    expect(rooms.leaveRoom).not.toHaveBeenCalled();
+    expect(rooms.joinRoom).toHaveBeenCalledTimes(1);
+    expect(survivalRoom.phaseEndsAtMs).toBe(survivalDeadline);
+    expect(survivalState.startedAtMs).toBe(70_000);
+  });
+
+  it('replays no transition when the survival screen remounts on the same day', async () => {
+    forgetDayTransitions();
+    let listeners: RoomClientListeners | undefined;
+    const survivalRoom: RoomPublicState = {
+      ...lobby,
+      phase: 'SURVIVAL',
+      phaseEndsAtMs: 70_000 + GAME.survivalDurationMs,
+    };
+    const survivalState: SurvivalState = {
+      stateId: 'survival:ABC234:70000',
+      roomCode: 'ABC234',
+      dayNumber: 1,
+      startedAtMs: 70_000,
+      households: [{
+        playerId: player.id,
+        displayName: player.username,
+        slot: 0,
+        characters: [{
+          id: player.id,
+          displayName: player.username,
+          kind: 'MAIN',
+          catalogId: null,
+          isAlive: true,
+          stats: SURVIVAL_CHARACTER_DEFAULTS.stats,
+          dailyNutritionCost: SURVIVAL_CHARACTER_DEFAULTS.dailyNutritionCost,
+          dailyHydrationCost: SURVIVAL_CHARACTER_DEFAULTS.dailyHydrationCost,
+        }],
+        inventory: [],
+      }],
+    };
+    const rooms = () => roomClientStub({
+      subscribe: vi.fn((next) => {
+        listeners = next;
+        next.onConnection('CONNECTED');
+        return () => undefined;
+      }),
+      joinRoom: vi.fn().mockResolvedValue(survivalRoom),
+    });
+
+    const first = renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms());
+    await screen.findByRole('heading', { name: 'Survival phase' });
+    act(() => { listeners?.onSurvivalState?.(survivalState); });
+    expect(screen.getByRole('status').textContent).toBe('Day #1');
+    // Watched on the real clock, because what stops the replay is elapsed time
+    // rather than a mount count.
+    await waitFor(
+      () => expect(document.querySelector('.day-transition')).toBeNull(),
+      { timeout: DAY_TRANSITION_TOTAL_MS * 2 },
+    );
+    first.unmount();
+
+    // A reconnecting client is sent the same committed state again. The day it
+    // observes has not changed, so it lands on the survival screen directly.
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms());
+    await screen.findByRole('heading', { name: 'Survival phase' });
+    act(() => { listeners?.onSurvivalState?.(survivalState); });
+    expect(document.querySelector('.day-transition')).toBeNull();
   });
 
   it('destroys Phaser at TALLY, waits for the server result, and renders the immutable tally', async () => {

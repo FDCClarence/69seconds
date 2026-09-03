@@ -8,7 +8,8 @@ import { GAME } from './constants.js';
  * slot cost — but a person fills every carry slot, so recruiting one is a
  * dedicated trip to your cart. Everything here is data; nothing imports game
  * logic, so editing this file can change the roster but cannot break the
- * simulation. The per-match draw lives in `npc-spawn.ts`.
+ * simulation. The per-match draw lives in `npc-spawn.ts`, and what a recruited
+ * person starts the survival day with lives in `survival-table.ts`.
  */
 
 /**

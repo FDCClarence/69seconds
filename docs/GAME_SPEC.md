@@ -191,6 +191,29 @@ A match places every distinct person that fits under the roster cap — `maxPerM
 
 Each person's art is a large hand-authored canvas with the figure inside a wide transparent margin, so the catalog carries the file's pixel size and the figure's bounding box. Both the on-map sprite and the HUD portrait are framed from that one rect, which is what keeps every person at a consistent on-screen size. Replacing a file with a different export size fails `apps/web/src/game/npc-art.test.ts` rather than silently mis-framing them.
 
+## Survival households and character stats
+
+At the buzzer the server derives one household per player from the frozen looting result. A household holds that player's main character, only the people that player personally recruited, and only that player's deposited items. Households are never merged, and the eventual objective is to be the last household with a living character — elimination and win conditions are not implemented yet.
+
+- A main character and a recruited NPC are the **same** representation. There is no separate player-stat system.
+- Every character carries six stats — Health, Survival, Morale, Strength, Nutrition, Hydration — each as a **current/max pair**. All six point the same way: higher is better, lower is worse, 0 is the worst possible value.
+- `max` is per character and per stat. 100 is the default scale, never a global assumption.
+- Each character also carries a Daily Nutrition Cost and a Daily Hydration Cost. These are plain amounts, not pairs.
+- `isAlive` is explicit and starts true for everybody. Death is never inferred from Health, because the coming rules kill on combined Nutrition and Hydration rather than on damage.
+- A recruited person becomes exactly one household member, regardless of the four carry slots they occupied during looting. Ordinary loot stays deposited inventory: an item never becomes a character.
+
+Starting values live only in `packages/shared/src/survival-table.ts`: Health 100/100, Survival 50/100, Morale 100/100, Strength 50/100, Nutrition 100/100, Hydration 100/100, and 20 for each daily cost. They are placeholders for a first playable day, not final balance. Per-person overrides go in `NPC_SURVIVAL_OVERRIDES` in the same file, keyed by NPC catalog id; any starting value, any max, or either daily cost can be overridden from that table alone, without touching the initialization engine. The table is empty today, so every person on the roster runs on the defaults.
+
+Survival state is server-authoritative and read-only to clients. It is broadcast once as `survival:state` after the looting result and replayed verbatim to a reconnecting member. No client event carries stats, maxes, daily costs, or alive state, so none of it can be submitted.
+
+### Day numbering and the day transition
+
+The grocery run happens **before Day 1**, so the day the buzzer opens is Day 1. `dayNumber` is carried on the survival state, the server owns it, and it starts at `SURVIVAL.firstDayNumber`. Clients render the number they are given and never derive, increment, or report one — no client event carries a day. Advancing to Day 2 is not implemented; the number is a server field and an initializer parameter so the coming end-of-day flow can open the next day through the same call.
+
+On genuinely entering a new day, a client fades to black, shows `Day #X` from the authoritative number, holds for about two seconds in total, then fades away to reveal the survival screen. The overlay is presentational: the server's 120-second day is already running behind it, the transition neither pauses nor extends the deadline, and nothing is sent to the server when the animation finishes. A remount or reconnect during the same day finishes only the time left rather than replaying the fade, remembered in a client-only session note that is never authoritative. Reduced-motion players see the overlay and its text without the fade.
+
+Not implemented yet, and deliberately out of scope for the current model: feeding, item consumption, end-of-day resource drain (Nutrition and Hydration falling by their daily costs), the death rolls that follow (combined Nutrition + Hydration below 30 gives a 50% death chance the next day; below 10 is certain death), advancing past Day 1, and events.
+
 ## Timing and tally
 
 - The looting window is exactly 69,000 ms measured against the server's monotonic match timeline.
@@ -224,6 +247,7 @@ Each person's art is a large hand-authored canvas with the figure inside a wide 
 - The server ends looting after 69 seconds even if clients pause, lag, alter their clocks, or send late requests.
 - Inputs and interactions have no effect after the looting deadline, `SURVIVAL` included.
 - The survival day begins on every client at the authoritative looting deadline, with the server-owned 120-second deadline, and no client may end or extend it.
+- The first survival day is Day 1 for every client, taken from the server's survival state, and the `Day #X` transition that announces it changes no deadline.
 - Refresh/reconnect within the supported grace window does not duplicate a player or reset authoritative match state.
 - Malformed, unauthorized, impossible, and excessive network messages are rejected with stable typed errors and do not crash the process.
 - Critical pure rules, room lifecycle, authority checks, network validation, and browser flow have automated coverage at their appropriate layers.

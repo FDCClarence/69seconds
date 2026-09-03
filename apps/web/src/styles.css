@@ -222,6 +222,13 @@ fieldset { min-width: 0; display: flex; flex-direction: column; gap: 1rem; margi
 .focus-hint { position: absolute; right: 1rem; bottom: .85rem; z-index: 5; margin: 0; padding: .38rem .55rem; color: #d6ded9; background: rgba(10,23,24,.85); font: .58rem var(--mono); pointer-events: none; }
 .focus-hint b { color: #fff0b0; }
 
+/* Survival day transition. Presentation only: the day's server-owned deadline
+   runs behind it, so nothing here waits on the animation or reports it. */
+.day-transition { position: fixed; inset: 0; z-index: 40; display: grid; place-content: center; justify-items: center; gap: .5rem; padding: 1rem; background: #05090a; color: #fff8e6; text-align: center; pointer-events: none; animation: day-transition-veil 2000ms ease-in-out both; }
+.day-transition-label { font: 900 clamp(2.6rem, 11vw, 6rem)/1 var(--mono); letter-spacing: -.06em; text-shadow: .06em .06em 0 #a94636; animation: day-transition-arrive 900ms cubic-bezier(.2,.8,.2,1) both; }
+/* Reduced motion keeps the overlay and its text, and drops only the movement. */
+.day-transition.is-static, .day-transition.is-static .day-transition-label { animation: none; opacity: 1; transform: none; }
+
 /* Final tally */
 .tally-page { background: radial-gradient(circle at 55% -10%, #35413e 0, #171c1c 30rem, var(--bg) 64rem); }
 .tally-shell { position: relative; z-index: 1; width: min(72rem, 100%); align-self: center; display: flex; flex-direction: column; gap: 1rem; padding: clamp(2.4rem, 7vw, 5rem) 1rem 5rem; }
@@ -262,6 +269,8 @@ fieldset { min-width: 0; display: flex; flex-direction: column; gap: 1rem; margi
 @keyframes loading-turn { 50% { transform: rotate(45deg); } }
 @keyframes countdown-ring { from { transform: scale(.7); opacity: .45; } to { transform: scale(1.1); opacity: 0; } }
 @keyframes countdown-pop { from { transform: scale(.7); opacity: .2; } to { transform: scale(1); opacity: 1; } }
+@keyframes day-transition-veil { 0% { opacity: 0; } 14%, 74% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes day-transition-arrive { from { transform: scale(.9); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 @keyframes tally-arrive { from { transform: translateY(1rem); opacity: 0; } }
 
 @media (max-width: 1120px) {

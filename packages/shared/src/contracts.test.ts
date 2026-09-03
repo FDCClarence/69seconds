@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CLIENT_EVENTS,
   GAME,
+  SERVER_EVENTS,
+  SURVIVAL_CHARACTER_DEFAULTS,
   canCarryItem,
   clientInputSchema,
   loginRequestSchema,
@@ -14,6 +17,7 @@ import {
   normalizeMovementVector,
   roomCodeSchema,
   roomCommandResultSchema,
+  survivalStateSchema,
 } from './index.js';
 
 describe('shared contracts', () => {
@@ -207,5 +211,105 @@ describe('shared contracts', () => {
       password: 'password',
       unexpected: true,
     })).toThrow();
+  });
+
+  it('carries the survival households one way only', () => {
+    // Server to client, and nowhere in the other direction: there is no client
+    // event through which stats, maxes, daily costs, or alive state could be
+    // submitted.
+    expect(Object.values(SERVER_EVENTS)).toContain('survival:state');
+    expect(Object.values(CLIENT_EVENTS)).not.toContain('survival:state');
+    for (const event of Object.values(CLIENT_EVENTS)) {
+      expect(event).not.toMatch(/survival/);
+    }
+  });
+
+  it('accepts a household whose recruit has their own maxes and daily costs', () => {
+    const state = survivalStateSchema.parse({
+      stateId: 'survival:ABC234:71000',
+      roomCode: 'ABC234',
+      dayNumber: 1,
+      startedAtMs: 71_000,
+      households: [{
+        playerId: 'player-1',
+        displayName: 'Player 1',
+        slot: 0,
+        characters: [{
+          id: 'player-1',
+          displayName: 'Player 1',
+          kind: 'MAIN',
+          catalogId: null,
+          isAlive: true,
+          stats: SURVIVAL_CHARACTER_DEFAULTS.stats,
+          dailyNutritionCost: 20,
+          dailyHydrationCost: 20,
+        }, {
+          id: 'loot-spot-01',
+          displayName: 'Maya',
+          kind: 'NPC',
+          catalogId: 'maya',
+          isAlive: true,
+          stats: { ...SURVIVAL_CHARACTER_DEFAULTS.stats, health: { current: 120, max: 120 } },
+          dailyNutritionCost: 20,
+          dailyHydrationCost: 30,
+        }],
+        inventory: [{ id: 'loot-spot-02', catalogId: 'canned-soup', label: 'Canned Soup', category: 'food' }],
+      }],
+    });
+    expect(state.households[0]?.characters[1]?.stats.health.max).toBe(120);
+    expect(state.households[0]?.characters[1]?.dailyHydrationCost).toBe(30);
+  });
+
+  it('rejects survival state no server would produce', () => {
+    const base = survivalStateSchema.parse({
+      stateId: 'survival:ABC234:71000',
+      roomCode: 'ABC234',
+      dayNumber: 1,
+      startedAtMs: 71_000,
+      households: [{
+        playerId: 'player-1',
+        displayName: 'Player 1',
+        slot: 0,
+        characters: [{
+          id: 'player-1',
+          displayName: 'Player 1',
+          kind: 'MAIN',
+          catalogId: null,
+          isAlive: true,
+          stats: SURVIVAL_CHARACTER_DEFAULTS.stats,
+          dailyNutritionCost: 20,
+          dailyHydrationCost: 20,
+        }],
+        inventory: [],
+      }],
+    });
+    const withCharacter = (overrides: Record<string, unknown>) => ({
+      ...base,
+      households: [{
+        ...base.households[0],
+        characters: [{ ...base.households[0]?.characters[0], ...overrides }],
+      }],
+    });
+    // A stat above its own max, a max of zero, a negative daily cost, a main
+    // character claiming a catalog entry, and a household with nobody in it.
+    expect(() => survivalStateSchema.parse(withCharacter({
+      stats: { ...SURVIVAL_CHARACTER_DEFAULTS.stats, nutrition: { current: 101, max: 100 } },
+    }))).toThrow();
+    expect(() => survivalStateSchema.parse(withCharacter({
+      stats: { ...SURVIVAL_CHARACTER_DEFAULTS.stats, health: { current: 0, max: 0 } },
+    }))).toThrow();
+    expect(() => survivalStateSchema.parse(withCharacter({ dailyHydrationCost: -1 }))).toThrow();
+    expect(() => survivalStateSchema.parse(withCharacter({ catalogId: 'maya' }))).toThrow();
+    expect(() => survivalStateSchema.parse(withCharacter({ unexpected: true }))).toThrow();
+    expect(() => survivalStateSchema.parse({
+      ...base,
+      households: [{ ...base.households[0], characters: [] }],
+    })).toThrow();
+    // A day before the first, or a fraction of one: looting precedes Day 1, so
+    // there is no Day 0 and no half day.
+    for (const dayNumber of [0, -1, 1.5]) {
+      expect(() => survivalStateSchema.parse({ ...base, dayNumber })).toThrow();
+    }
+    expect(survivalStateSchema.parse({ ...base, dayNumber: 2 }).dayNumber).toBe(2);
   });
 });

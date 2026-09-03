@@ -6,8 +6,12 @@ import {
   type InteractionResult,
   type MatchTally,
   type RoomCommandResult,
+  type SurvivalState,
   type RoomPublicState,
   type ServerToClientEvents,
+  CLIENT_EVENTS,
+  SURVIVAL,
+  SURVIVAL_CHARACTER_DEFAULTS,
 } from '@69-seconds/shared';
 import { createServer, type Server as HttpServer } from 'node:http';
 import { io as createClient, type Socket as ClientSocket } from 'socket.io-client';
@@ -333,9 +337,12 @@ describe('authenticated Socket.IO room lifecycle', () => {
     expect(looting.phaseEndsAtMs).toBe(deadline);
 
     let tallyEvents = 0;
+    let householdEvents = 0;
     host.on('match:tally', () => { tallyEvents += 1; });
+    host.on('survival:state', () => { householdEvents += 1; });
     const survivalState = nextLobbyState(host, (room) => room.phase === 'SURVIVAL');
     const firstTally = new Promise<MatchTally>((resolve) => host.once('match:tally', resolve));
+    const firstHouseholds = new Promise<SurvivalState>((resolve) => host.once('survival:state', resolve));
     serverNowMs = deadline;
     // The day's deadline is server-owned and derived from the looting deadline.
     expect(await survivalState).toMatchObject({
@@ -351,6 +358,48 @@ describe('authenticated Socket.IO room lifecycle', () => {
       totalItems: 0,
     });
 
+    // The households arrive on the same authoritative transition, produced by the
+    // server from that frozen result: one per player, everybody alive on the
+    // shared defaults, and nothing recruited in this match.
+    const households = await firstHouseholds;
+    expect(households).toMatchObject({
+      stateId: `survival:${result.resultId}`,
+      roomCode: created.room.code,
+      // The looting run happens before Day 1, so the day the buzzer opens is
+      // Day 1, and it arrives on the wire rather than being counted client-side.
+      dayNumber: SURVIVAL.firstDayNumber,
+      startedAtMs: deadline,
+    });
+    expect(households.dayNumber).toBe(1);
+    expect(households.households).toHaveLength(1);
+    expect(households.households[0]).toMatchObject({ playerId: users[0]!.id, slot: 0, inventory: [] });
+    expect(households.households[0]?.characters).toHaveLength(1);
+    expect(households.households[0]?.characters[0]).toMatchObject({
+      kind: 'MAIN',
+      isAlive: true,
+      catalogId: null,
+      dailyNutritionCost: SURVIVAL_CHARACTER_DEFAULTS.dailyNutritionCost,
+      dailyHydrationCost: SURVIVAL_CHARACTER_DEFAULTS.dailyHydrationCost,
+    });
+    expect(households.households[0]?.characters[0]?.stats).toEqual(SURVIVAL_CHARACTER_DEFAULTS.stats);
+
+    // There is no client event carrying survival state, so a modified client has
+    // nothing to submit: emitting the server's own event name reaches no handler
+    // and the committed households stay exactly as the server built them.
+    expect(Object.values(CLIENT_EVENTS)).not.toContain('survival:state');
+    (host.emit as (name: string, body: unknown) => unknown)('survival:state', {
+      ...households,
+      households: [{
+        ...households.households[0],
+        characters: [{
+          ...households.households[0]?.characters[0],
+          isAlive: false,
+          stats: { ...households.households[0]?.characters[0]?.stats, health: { current: 9_000, max: 9_000 } },
+        }],
+      }],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
     const lateInteraction = await new Promise<InteractionResult>((resolve) => {
       host.emit('interaction:request', {
         requestId: '00000000-0000-4000-8000-000000000301',
@@ -360,6 +409,7 @@ describe('authenticated Socket.IO room lifecycle', () => {
     expect(lateInteraction).toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(tallyEvents).toBe(1);
+    expect(householdEvents).toBe(1);
 
     host.disconnect();
     const refreshed: TestClient = createClient(origin, {
@@ -371,6 +421,7 @@ describe('authenticated Socket.IO room lifecycle', () => {
     });
     clients.push(refreshed);
     const replayed = new Promise<MatchTally>((resolve) => refreshed.once('match:tally', resolve));
+    const replayedHouseholds = new Promise<SurvivalState>((resolve) => refreshed.once('survival:state', resolve));
     const connected = new Promise<void>((resolve, reject) => {
       refreshed.once('connect', resolve);
       refreshed.once('connect_error', reject);
@@ -378,6 +429,8 @@ describe('authenticated Socket.IO room lifecycle', () => {
     refreshed.connect();
     await connected;
     expect(await replayed).toEqual(result);
+    // Replayed verbatim, and untouched by what the client tried to send.
+    expect(await replayedHouseholds).toEqual(households);
     expect(await command(refreshed, 'lobby:start', {}))
       .toMatchObject({ ok: false, error: { code: 'MATCH_ALREADY_STARTED' } });
   });

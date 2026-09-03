@@ -187,6 +187,12 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     if (tally) socket.emit('match:tally', tally);
   }
 
+  /** The already committed households, replayed verbatim; never rebuilt per socket. */
+  function sendSurvivalStateTo(socket: GameSocket, roomCode: string): void {
+    const state = simulations.get(roomCode)?.survivalState();
+    if (state) socket.emit('survival:state', state);
+  }
+
   function broadcastLootUpdate(roomCode: string, update: LootUpdate | null): void {
     if (update) io.to(roomCode).emit('loot:update', update);
   }
@@ -209,6 +215,9 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       if (result.tallyCommitted) {
         const tally = simulation.tally();
         if (tally) io.to(simulation.roomCode).emit('match:tally', tally);
+        // After the looting result, because the households are derived from it.
+        const survivalState = simulation.survivalState();
+        if (survivalState) io.to(simulation.roomCode).emit('survival:state', survivalState);
       }
     }
   }, 1_000 / NETWORK.simulationTickRateHz);
@@ -344,6 +353,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
           // the loot floor no longer exists once the day starts.
           if (recovered.phase === 'SURVIVAL' || recovered.phase === 'TALLY') {
             sendTallyTo(socket, recovered.code);
+            sendSurvivalStateTo(socket, recovered.code);
           } else {
             sendLootSyncTo(socket, recovered.code, playerId);
           }

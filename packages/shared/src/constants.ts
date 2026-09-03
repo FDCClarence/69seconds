@@ -19,6 +19,17 @@ export const GAME = {
   mapHeightPixels: 1_200,
 } as const;
 
+/**
+ * Survival day numbering. The grocery run happens *before* Day 1, so the first
+ * day the server opens is Day 1.
+ *
+ * The number is server-owned: a client renders the day it is given and never
+ * derives, increments, or reports one of its own.
+ */
+export const SURVIVAL = {
+  firstDayNumber: 1,
+} as const;
+
 export const ROOM_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
 export const NETWORK = {

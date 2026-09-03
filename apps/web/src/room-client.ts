@@ -10,6 +10,7 @@ import {
   serverErrorSchema,
   shoveLandedSchema,
   shoveResultSchema,
+  survivalStateSchema,
   type ClientToServerEvents,
   type ClientInput,
   type GameSnapshot,
@@ -27,6 +28,7 @@ import {
   type ShoveLanded,
   type ShoveRequest,
   type ShoveResult,
+  type SurvivalState,
 } from '@69-seconds/shared';
 import { io, type Socket } from 'socket.io-client';
 
@@ -38,6 +40,11 @@ export interface RoomClientListeners {
   onConnection(state: SocketConnectionState): void;
   onError(error: RoomClientError): void;
   onResult?(result: MatchTally): void;
+  /**
+   * The day's households, exactly as the server committed them. Read-only: the
+   * client has no event with which to send any of it back.
+   */
+  onSurvivalState?(state: SurvivalState): void;
 }
 
 export interface RoomClient {
@@ -171,6 +178,14 @@ export class SocketRoomClient implements RoomClient {
         return;
       }
       for (const listener of this.listeners) listener.onResult?.(parsed.data);
+    });
+    socket.on('survival:state', (payload) => {
+      const parsed = survivalStateSchema.safeParse(payload);
+      if (!parsed.success) {
+        this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received an invalid survival state', retryable: true });
+        return;
+      }
+      for (const listener of this.listeners) listener.onSurvivalState?.(parsed.data);
     });
   }
 

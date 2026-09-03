@@ -18,6 +18,7 @@ import type {
   ShoveRequest,
   ShoveLanded,
   ShoveResult,
+  SurvivalState,
 } from './schemas.js';
 
 export const CLIENT_EVENTS = {
@@ -39,6 +40,7 @@ export const SERVER_EVENTS = {
   LOOT_UPDATE: 'loot:update',
   SHOVE_LANDED: 'shove:landed',
   MATCH_TALLY: 'match:tally',
+  SURVIVAL_STATE: 'survival:state',
   ERROR: 'game:error',
 } as const;
 
@@ -65,6 +67,13 @@ export interface ServerToClientEvents {
   'shove:landed': (event: ShoveLanded) => void;
   /** Broadcast once at the deadline and replayed to a reconnecting room member. */
   'match:tally': (result: MatchTally) => void;
+  /**
+   * The survival day's households, broadcast once after the looting result and
+   * replayed to a reconnecting member. Server-to-client only: there is
+   * deliberately no client event that carries stats, maxes, daily costs, or
+   * alive state, so none of it can be submitted.
+   */
+  'survival:state': (state: SurvivalState) => void;
   'game:error': (error: ServerError) => void;
 }
 

@@ -2,8 +2,10 @@ import {
   GAME,
   CARRYABLE_CATEGORIES,
   NETWORK,
+  SURVIVAL,
   gameSnapshotSchema,
   initialSprintState,
+  initializeSurvivalState,
   carryableEntry,
   matchTallySchema,
   movementAxis,
@@ -20,6 +22,7 @@ import {
   type RoomPublicState,
   type ShoveRequest,
   type SprintState,
+  type SurvivalState,
   type Vector2,
 } from '@69-seconds/shared';
 import { MatchLootAuthority, type InteractionResolution, type LootAuthorityOptions } from './loot-authority.js';
@@ -79,7 +82,20 @@ export class AuthoritativeRoomSimulation {
   private lootingStartedAtMs: number | null = null;
   /** Server clock time the survival day opened; null until looting ends. */
   private survivalStartedAtMs: number | null = null;
+  /**
+   * Which survival day the room is on. Looting happens before Day 1, so the day
+   * the buzzer opens is `SURVIVAL.firstDayNumber`.
+   *
+   * It lives here, beside the phase and the deadline, because advancing the day
+   * is a server decision: the coming end-of-day flow increments this field and
+   * rebuilds the committed state from it. No client message reaches it, and no
+   * client counts days of its own — every client renders the number the
+   * committed state carries.
+   */
+  private survivalDay = SURVIVAL.firstDayNumber;
   private committedTally: MatchTally | null = null;
+  /** One household per player, produced at the buzzer; null until then. */
+  private committedSurvivalState: SurvivalState | null = null;
   private snapshotSequence = 0;
   private snapshotAccumulatorSeconds = 0;
 
@@ -238,6 +254,23 @@ export class AuthoritativeRoomSimulation {
   }
 
   /**
+   * The frozen survival state: one household per player, each with its main
+   * character, that player's recruits, and that player's deposited items. Null
+   * until the buzzer. Read-only — no client event can supply or amend any of it.
+   */
+  survivalState(): SurvivalState | null {
+    return this.committedSurvivalState;
+  }
+
+  /**
+   * The authoritative survival day. It reads `SURVIVAL.firstDayNumber` before
+   * and during the first day; only the server ever moves it.
+   */
+  survivalDayNumber(): number {
+    return this.survivalDay;
+  }
+
+  /**
    * The server-owned survival window, exposed for the end-of-day rule that will
    * read it. Null outside `SURVIVAL`; a client never supplies either value.
    */
@@ -269,6 +302,16 @@ export class AuthoritativeRoomSimulation {
       // survival day is played from it: deposited items, recruited people, and
       // who was in the match all live in that one immutable object.
       this.committedTally = this.createTally(lootingEndedAtMs);
+      // Households are derived here, from that frozen result, so the day's
+      // starting characters are a server decision made once. A recruit becomes
+      // one household member; ordinary loot stays deposited inventory. The day
+      // it opens is Day 1 — the grocery run is what happens before Day 1 — and
+      // it is passed in rather than assumed, so the end-of-day flow can later
+      // open Day 2 through this same call.
+      this.committedSurvivalState = initializeSurvivalState({
+        result: this.committedTally,
+        dayNumber: this.survivalDay,
+      });
       this.survivalStartedAtMs = lootingEndedAtMs;
       // Derived from the authoritative looting deadline rather than from
       // `serverNowMs`, so a late timer callback shortens the day instead of

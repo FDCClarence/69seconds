@@ -4,6 +4,8 @@ import {
   PLAYER_SPAWN_POSITIONS,
   SHOVE,
   SPRINT,
+  SURVIVAL,
+  SURVIVAL_CHARACTER_DEFAULTS,
   distanceBetween,
   isValidPlayerPosition,
   simulatePlayerMovement,
@@ -532,5 +534,187 @@ describe('AuthoritativeRoomSimulation survival phase', () => {
     }, at).result).toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
     expect(simulation.resolveShove('player-0', shove('player-1'), at).result)
       .toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
+  });
+});
+
+describe('survival household initialization', () => {
+  const deadline = 2_000 + GAME.lootingDurationMs;
+
+  /**
+   * Two players, one item and one person within reach of each. Everything is
+   * injected so a household can be built without walking anybody across the
+   * store, the same seam the loot authority tests use.
+   */
+  function housedSimulation() {
+    const base = room(2);
+    base.players[0]!.position = { x: 900, y: 600 };
+    base.players[1]!.position = { x: 1_100, y: 600 };
+    return { base, simulation: new AuthoritativeRoomSimulation(base, {
+      spawns: [
+        { id: 'loot-soup', catalogId: 'canned-soup', x: 900, y: 600 },
+        { id: 'loot-map', catalogId: 'map', x: 1_100, y: 600 },
+      ],
+      npcSpawns: [
+        { id: 'npc-maya', catalogId: 'maya', x: 900, y: 600 },
+        { id: 'npc-gort', catalogId: 'gort', x: 1_100, y: 600 },
+      ],
+      carts: [
+        { id: 'cart-0', slot: 0, label: 'Cart 1', x: 900, y: 600, width: 128, height: 72 },
+        { id: 'cart-1', slot: 1, label: 'Cart 2', x: 1_100, y: 600, width: 128, height: 72 },
+      ],
+      collision: [],
+    }) };
+  }
+
+  let requestCounter = 500;
+  function bank(
+    simulation: AuthoritativeRoomSimulation,
+    playerId: string,
+    targetId: string,
+    cartId: string,
+    atMs: number,
+  ): void {
+    const pickUp = simulation.resolveInteraction(playerId, {
+      requestId: `00000000-0000-4000-8000-${String(requestCounter += 1).padStart(12, '0')}`,
+      action: 'PICK_UP',
+      targetId,
+    }, atMs);
+    expect(pickUp.result.outcome).toBe('PICKED_UP');
+    const deposit = simulation.resolveInteraction(playerId, {
+      requestId: `00000000-0000-4000-8000-${String(requestCounter += 1).padStart(12, '0')}`,
+      action: 'DROP_OFF',
+      targetId: cartId,
+    }, atMs);
+    expect(deposit.result.outcome).toBe('DEPOSITED');
+  }
+
+  /** Player 0 recruits Maya and banks soup; player 1 recruits Gort only. */
+  function playedDay() {
+    const { base, simulation } = housedSimulation();
+    simulation.tick(2_000);
+    bank(simulation, 'player-0', 'loot-soup', 'cart-0', 2_001);
+    bank(simulation, 'player-0', 'npc-maya', 'cart-0', 2_002);
+    bank(simulation, 'player-1', 'npc-gort', 'cart-1', 2_003);
+    simulation.tick(deadline);
+    return { base, simulation };
+  }
+
+  it('produces no survival state until the server reaches the buzzer', () => {
+    const { simulation } = housedSimulation();
+    expect(simulation.survivalState()).toBeNull();
+    simulation.tick(2_000);
+    bank(simulation, 'player-0', 'npc-maya', 'cart-0', 2_001);
+    // Recruited, banked, and still no household: the day has not opened.
+    expect(simulation.survivalState()).toBeNull();
+    simulation.tick(deadline - 1);
+    expect(simulation.survivalState()).toBeNull();
+    simulation.tick(deadline);
+    expect(simulation.survivalState()).not.toBeNull();
+  });
+
+  it('builds one household per player from its own authoritative carts', () => {
+    const { simulation } = playedDay();
+    const state = simulation.survivalState();
+    expect(state).toMatchObject({
+      stateId: `survival:ABC234:${deadline}`,
+      roomCode: 'ABC234',
+      startedAtMs: deadline,
+    });
+    expect(state?.households.map((household) => household.playerId)).toEqual(['player-0', 'player-1']);
+    // Each household holds its own main character plus only its own recruit, and
+    // the soup stays inventory rather than becoming somebody.
+    expect(state?.households[0]?.characters.map((character) => [character.kind, character.displayName]))
+      .toEqual([['MAIN', 'Player 0'], ['NPC', 'Maya']]);
+    expect(state?.households[1]?.characters.map((character) => [character.kind, character.displayName]))
+      .toEqual([['MAIN', 'Player 1'], ['NPC', 'Gort']]);
+    expect(state?.households[0]?.inventory).toEqual([
+      { id: 'loot-soup', catalogId: 'canned-soup', label: 'Canned Soup', category: 'food' },
+    ]);
+    expect(state?.households[1]?.inventory).toEqual([]);
+    expect(state?.households.flatMap((household) => household.characters)
+      .every((character) => character.isAlive)).toBe(true);
+  });
+
+  it('gives every character the shared defaults, as separate values', () => {
+    const { simulation } = playedDay();
+    for (const household of simulation.survivalState()?.households ?? []) {
+      for (const character of household.characters) {
+        expect(character.stats).toEqual(SURVIVAL_CHARACTER_DEFAULTS.stats);
+        expect(character.dailyNutritionCost).toBe(SURVIVAL_CHARACTER_DEFAULTS.dailyNutritionCost);
+        expect(character.dailyHydrationCost).toBe(SURVIVAL_CHARACTER_DEFAULTS.dailyHydrationCost);
+        expect(character.stats.survival.current).not.toBe(character.stats.survival.max);
+      }
+    }
+  });
+
+  it('commits the households once and keeps returning the same frozen object', () => {
+    const { simulation } = playedDay();
+    const state = simulation.survivalState();
+    expect(Object.isFrozen(state)).toBe(true);
+    for (const at of [deadline + 1, deadline + GAME.survivalDurationMs, deadline + 300_000]) {
+      expect(simulation.tick(at).tallyCommitted).toBe(false);
+      expect(simulation.survivalState()).toBe(state);
+    }
+  });
+
+  it('counts a recruit as one household member despite costing every carry slot', () => {
+    const { simulation } = playedDay();
+    const household = simulation.survivalState()?.households[0];
+    // Maya filled all four looting carry slots and is one character.
+    expect(household?.characters.filter((character) => character.kind === 'NPC')).toHaveLength(1);
+    expect(household?.characters).toHaveLength(2);
+  });
+});
+
+describe('survival day number', () => {
+  const lootingDeadline = 2_000 + GAME.lootingDurationMs;
+
+  /** Runs the countdown and looting out, leaving the first survival day open. */
+  function openedDay(): AuthoritativeRoomSimulation {
+    const simulation = new AuthoritativeRoomSimulation(room(2));
+    simulation.tick(2_000);
+    simulation.tick(lootingDeadline);
+    return simulation;
+  }
+
+  it('opens the first survival day as Day 1, since the grocery run precedes it', () => {
+    const simulation = openedDay();
+    expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber);
+    expect(simulation.survivalDayNumber()).toBe(1);
+    // Every client reads the day off this one committed object.
+    expect(simulation.survivalState()?.dayNumber).toBe(1);
+  });
+
+  it('reports the first day before the buzzer too, so the number is never absent', () => {
+    const simulation = new AuthoritativeRoomSimulation(room(1));
+    expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber);
+    simulation.tick(2_000);
+    expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber);
+  });
+
+  it('does not advance the day on its own, and never on the clients\' behalf', () => {
+    const simulation = openedDay();
+    const state = simulation.survivalState();
+    // Well past the two-second client transition, and past the day's deadline.
+    for (const at of [lootingDeadline + 2_000, lootingDeadline + GAME.survivalDurationMs + 60_000]) {
+      simulation.tick(at);
+      expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber);
+      expect(simulation.survivalState()).toBe(state);
+      expect(simulation.survivalState()?.dayNumber).toBe(1);
+    }
+  });
+
+  it('keeps the day and the day\'s deadline independent of the client transition', () => {
+    const simulation = openedDay();
+    const endsAtMs = lootingDeadline + GAME.survivalDurationMs;
+    // The client fades `Day #1` in and out over its first two seconds. Nothing
+    // it does reaches the server, so the deadline is still measured from the
+    // looting buzzer and is two seconds shorter for having shown it.
+    simulation.tick(lootingDeadline + 2_000);
+    expect(simulation.snapshot(lootingDeadline + 2_000)).toMatchObject({
+      phase: 'SURVIVAL',
+      phaseEndsAtMs: endsAtMs,
+    });
+    expect(simulation.survivalWindow()).toEqual({ startedAtMs: lootingDeadline, endsAtMs });
   });
 });

@@ -22,6 +22,7 @@ import {
 import { CarryableArt } from '../../carryable-art.js';
 import type { CarryHudItem, CarryHudState, GameFeedback, GroceryGameFactory, SprintHudState } from '../types.js';
 import { mountGroceryGame } from './game-lifecycle.js';
+import { usePrefersReducedMotion } from '../../prefers-reduced-motion.js';
 
 const READY_SPRINT: SprintHudState = {
   fraction: 1,
@@ -419,18 +420,6 @@ function GameSettings({ bindings, audio, onBindingsChange, onAudioChange, onClos
       <p className="settings-note">Original procedural placeholder tones; no third-party audio assets.</p>
     </section>
   </aside>;
-}
-
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(() => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false);
-  useEffect(() => {
-    const query = window.matchMedia?.('(prefers-reduced-motion: reduce)');
-    if (!query) return undefined;
-    const update = () => setReduced(query.matches);
-    query.addEventListener('change', update);
-    return () => query.removeEventListener('change', update);
-  }, []);
-  return reduced;
 }
 
 function playFeedbackCue(feedback: GameFeedback): void {

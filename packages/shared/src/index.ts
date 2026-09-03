@@ -9,3 +9,5 @@ export * from './npc-spawn.js';
 export * from './npc-table.js';
 export * from './rules.js';
 export * from './schemas.js';
+export * from './survival.js';
+export * from './survival-table.js';

@@ -1,7 +1,14 @@
-import type { LootSync, LootUpdate, ServerToClientEvents, ClientToServerEvents } from '@69-seconds/shared';
+import {
+  SURVIVAL_CHARACTER_DEFAULTS,
+  type LootSync,
+  type LootUpdate,
+  type ServerToClientEvents,
+  type ClientToServerEvents,
+  type SurvivalState,
+} from '@69-seconds/shared';
 import type { Socket } from 'socket.io-client';
 import { describe, expect, it, vi } from 'vitest';
-import { SocketRoomClient } from './room-client.js';
+import { SocketRoomClient, type RoomClientError } from './room-client.js';
 
 type Handler = (...args: unknown[]) => void;
 
@@ -101,5 +108,77 @@ describe('SocketRoomClient gameplay synchronization', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('accepts the committed survival state and rejects a malformed one', () => {
+    const socket = new FakeSocket();
+    const client = new SocketRoomClient(socket as unknown as Socket<ServerToClientEvents, ClientToServerEvents>);
+    const state: SurvivalState = {
+      stateId: 'survival:ABC234:71000',
+      roomCode: 'ABC234',
+      // The server's own day number, which the client forwards without touching.
+      dayNumber: 1,
+      startedAtMs: 71_000,
+      households: [{
+        playerId: 'player-1',
+        displayName: 'Player 1',
+        slot: 0,
+        characters: [{
+          id: 'player-1',
+          displayName: 'Player 1',
+          kind: 'MAIN',
+          catalogId: null,
+          isAlive: true,
+          stats: SURVIVAL_CHARACTER_DEFAULTS.stats,
+          dailyNutritionCost: 20,
+          dailyHydrationCost: 20,
+        }, {
+          // A recruit with her own bigger tank, proving the client never assumes 100.
+          id: 'loot-spot-01',
+          displayName: 'Maya',
+          kind: 'NPC',
+          catalogId: 'maya',
+          isAlive: true,
+          stats: { ...SURVIVAL_CHARACTER_DEFAULTS.stats, health: { current: 100, max: 120 } },
+          dailyNutritionCost: 20,
+          dailyHydrationCost: 30,
+        }],
+        inventory: [{ id: 'loot-spot-02', catalogId: 'canned-soup', label: 'Canned Soup', category: 'food' }],
+      }],
+    };
+
+    const received: SurvivalState[] = [];
+    const errors: RoomClientError[] = [];
+    client.subscribe({
+      onRoom: () => {},
+      onClosed: () => {},
+      onConnection: () => {},
+      onError: (error) => errors.push(error),
+      onSurvivalState: (next) => received.push(next),
+    });
+
+    socket.emitFromServer('survival:state', state);
+    expect(received).toEqual([state]);
+    expect(errors).toEqual([]);
+
+    // A stat above its own max could never come from the server, so it is
+    // refused rather than rendered.
+    socket.emitFromServer('survival:state', {
+      ...state,
+      households: [{
+        ...state.households[0],
+        characters: [{ ...state.households[0]!.characters[0], stats: {
+          ...SURVIVAL_CHARACTER_DEFAULTS.stats,
+          nutrition: { current: 200, max: 100 },
+        } }],
+      }],
+    });
+    expect(received).toHaveLength(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: 'INVALID_PAYLOAD',
+      message: 'Received an invalid survival state',
+      retryable: true,
+    });
   });
 });

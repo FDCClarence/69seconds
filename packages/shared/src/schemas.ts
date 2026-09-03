@@ -1,6 +1,8 @@
 import { z } from 'zod';
-import { GAME, SPRINT } from './constants.js';
+import { GAME, SPRINT, SURVIVAL } from './constants.js';
 import { CARRYABLE_CATEGORIES } from './carryable.js';
+import { NPC_SPAWN_TABLE } from './npc-table.js';
+import { SURVIVAL_STAT_CEILING } from './survival-table.js';
 
 /**
  * Ordered lifecycle. A match runs `LOBBY → COUNTDOWN → LOOTING → SURVIVAL`;
@@ -158,6 +160,104 @@ export const matchTallySchema = z.strictObject({
   players: z.array(tallyPlayerResultSchema).min(1).max(GAME.maxPlayers),
   categoryTotals: z.array(tallyCategoryTotalSchema).max(CARRYABLE_CATEGORIES.length),
   totalItems: z.number().int().nonnegative(),
+});
+
+/**
+ * One survival stat, always a current/max pair. `max` belongs to the character
+ * that owns it: 100 is the default scale, never a global assumption, so a
+ * 120-max character validates exactly as happily as a 100-max one.
+ *
+ * Every stat points the same way — higher is better, 0 is the worst — so a
+ * later rule can sum or compare any two of them without a per-stat sign table.
+ */
+export const survivalStatSchema = z.strictObject({
+  current: z.number().finite().nonnegative().max(SURVIVAL_STAT_CEILING),
+  max: z.number().finite().positive().max(SURVIVAL_STAT_CEILING),
+}).refine((stat) => stat.current <= stat.max, {
+  message: 'Stat current must not exceed its max',
+});
+
+/**
+ * The six stats every character has. Written out rather than generated so the
+ * inferred type names them; `survival.test.ts` asserts these keys stay in step
+ * with `SURVIVAL_STAT_KEYS`.
+ */
+export const survivalStatsSchema = z.strictObject({
+  health: survivalStatSchema,
+  survival: survivalStatSchema,
+  morale: survivalStatSchema,
+  strength: survivalStatSchema,
+  nutrition: survivalStatSchema,
+  hydration: survivalStatSchema,
+});
+
+/** A player's own character, or somebody they recruited. Both are one shape. */
+export const survivalCharacterKindSchema = z.enum(['MAIN', 'NPC']);
+
+/**
+ * One survival character. A main character and a recruited NPC are the same
+ * representation, differing only in `kind` and in whether a catalog entry backs
+ * them, so no rule downstream needs two code paths to feed or kill somebody.
+ *
+ * `isAlive` is explicit rather than derived from health, because the coming
+ * death rules kill on combined nutrition and hydration rather than on damage.
+ */
+export const survivalCharacterSchema = z.strictObject({
+  /** Stable for the life of the match: the player id, or the recruited item id. */
+  id: z.string().min(1).max(128),
+  displayName: z.string().trim().min(1).max(64),
+  kind: survivalCharacterKindSchema,
+  /** The NPC catalog id backing this person; null for a main character. */
+  catalogId: z.string().min(1).max(64).nullable(),
+  isAlive: z.boolean(),
+  stats: survivalStatsSchema,
+  /** Plain daily amounts, not current/max pairs, and per character. */
+  dailyNutritionCost: z.number().finite().nonnegative().max(SURVIVAL_STAT_CEILING),
+  dailyHydrationCost: z.number().finite().nonnegative().max(SURVIVAL_STAT_CEILING),
+}).refine((character) => (character.kind === 'NPC') === (character.catalogId !== null), {
+  message: 'Only an NPC character carries a catalog id',
+});
+
+/**
+ * A deposited item held by a household. Identical to a tally line by design:
+ * the day is played from the frozen looting result, so an item keeps the id,
+ * label, and category that result already gave it.
+ */
+export const survivalInventoryItemSchema = tallyItemSchema;
+
+/**
+ * One player's household: their own character, the people they personally
+ * recruited, and their own deposited items. Households are never merged — each
+ * player manages only theirs.
+ */
+export const survivalHouseholdSchema = z.strictObject({
+  playerId: playerIdSchema,
+  displayName: z.string().trim().min(1).max(32),
+  slot: z.number().int().min(0).max(GAME.maxPlayers - 1),
+  /** The main character first, then each recruit in the order it was banked. */
+  characters: z.array(survivalCharacterSchema).min(1).max(1 + NPC_SPAWN_TABLE.maxPerMatch),
+  /** Kept apart from `characters`: ordinary loot never becomes a person. */
+  inventory: z.array(survivalInventoryItemSchema).max(256),
+});
+
+/**
+ * The server's survival state: one household per player, produced once from the
+ * frozen looting result. Read-only to clients — no client event carries any of
+ * it, so stats, maxes, daily costs, and alive state cannot be submitted.
+ */
+export const survivalStateSchema = z.strictObject({
+  stateId: z.string().min(1).max(128),
+  roomCode: roomCodeSchema,
+  /**
+   * Which survival day this state describes. Looting happens before Day 1, so
+   * the first day the server opens is `SURVIVAL.firstDayNumber`. It is carried
+   * on the state rather than counted on the client, so every client in a room
+   * renders the same day and none of them can advance it.
+   */
+  dayNumber: z.number().int().min(SURVIVAL.firstDayNumber),
+  /** The authoritative looting deadline the day opened on. */
+  startedAtMs: z.number().int().nonnegative(),
+  households: z.array(survivalHouseholdSchema).min(1).max(GAME.maxPlayers),
 });
 
 export const snapshotPlayerStateSchema = z.strictObject({
@@ -422,6 +522,14 @@ export type TallyItem = z.infer<typeof tallyItemSchema>;
 export type TallyCategoryTotal = z.infer<typeof tallyCategoryTotalSchema>;
 export type TallyPlayerResult = z.infer<typeof tallyPlayerResultSchema>;
 export type MatchTally = z.infer<typeof matchTallySchema>;
+// `SurvivalStat` itself is declared in `survival-table.ts`, the tuning file that
+// has no dependencies, so the balance defaults and the wire shape share one name.
+export type SurvivalStats = z.infer<typeof survivalStatsSchema>;
+export type SurvivalCharacterKind = z.infer<typeof survivalCharacterKindSchema>;
+export type SurvivalCharacter = z.infer<typeof survivalCharacterSchema>;
+export type SurvivalInventoryItem = z.infer<typeof survivalInventoryItemSchema>;
+export type SurvivalHousehold = z.infer<typeof survivalHouseholdSchema>;
+export type SurvivalState = z.infer<typeof survivalStateSchema>;
 export type SnapshotPlayerState = z.infer<typeof snapshotPlayerStateSchema>;
 export type GameSnapshot = z.infer<typeof gameSnapshotSchema>;
 export type ClientInput = z.infer<typeof clientInputSchema>;
