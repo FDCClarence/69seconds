@@ -134,6 +134,34 @@ describe('client loot view', () => {
     expect(isItemVisible(restocked, 'loot-milk')).toBe(true);
   });
 
+  it('does not duplicate a deposit received through both its acknowledgement and broadcast', () => {
+    const view = applyLootSync(createLootView(), sync());
+    const result: InteractionResult = {
+      outcome: 'DEPOSITED',
+      requestId: REQUEST_ID,
+      cartId: 'cart-0',
+      itemIds: ['loot-apples', 'loot-bread'],
+      cartItemCount: 2,
+      carriedItemIds: [],
+    };
+    const acknowledged = applyInteractionResult(view, result);
+    const broadcast: LootUpdate = {
+      type: 'DEPOSITED',
+      sequence: 1,
+      roomCode: 'ABC234',
+      playerId: 'player-0',
+      cartId: 'cart-0',
+      itemIds: ['loot-apples', 'loot-bread'],
+      cartItemCount: 2,
+      carriedCount: 0,
+    };
+    const updated = applyLootUpdate(acknowledged, broadcast);
+    const duplicate = applyLootUpdate(updated, broadcast);
+
+    expect(cartById(updated, 'cart-0')?.itemIds).toEqual(['loot-apples', 'loot-bread']);
+    expect(duplicate).toBe(updated);
+  });
+
   it('ignores stale updates and stale syncs', () => {
     const view = applyLootUpdate(applyLootSync(createLootView(), sync({ sequence: 5 })), pickedUpBy('player-1', 'loot-apples', 2));
     expect(view.items['loot-apples']?.available).toBe(true);

@@ -18,7 +18,8 @@ class FakeSocket {
     return this;
   }
 
-  off(): this {
+  off(event: string, handler: Handler): this {
+    this.handlers.set(event, (this.handlers.get(event) ?? []).filter((candidate) => candidate !== handler));
     return this;
   }
 
@@ -65,5 +66,40 @@ describe('SocketRoomClient gameplay synchronization', () => {
     client.subscribeLootUpdates((nextUpdate) => received.push(nextUpdate));
 
     expect(received).toEqual([initialSync, update]);
+  });
+
+  it('ignores duplicate updates and does not let an older sync discard newer cached state', () => {
+    const socket = new FakeSocket();
+    const client = new SocketRoomClient(socket as unknown as Socket<ServerToClientEvents, ClientToServerEvents>);
+    const update: LootUpdate = {
+      type: 'PICKED_UP', sequence: 3, roomCode: 'ABC234', playerId: 'player-1', itemId: 'loot-apples', carriedCount: 1,
+    };
+
+    socket.emitFromServer('loot:sync', { ...initialSync, sequence: 2 });
+    socket.emitFromServer('loot:update', update);
+    socket.emitFromServer('loot:update', update);
+    socket.emitFromServer('loot:sync', { ...initialSync, sequence: 1, items: [] });
+
+    const received: Array<LootSync | LootUpdate> = [];
+    client.subscribeLootSync((sync) => received.push(sync));
+    client.subscribeLootUpdates((nextUpdate) => received.push(nextUpdate));
+    expect(received).toEqual([{ ...initialSync, sequence: 2 }, update]);
+  });
+
+  it('times out a stalled connection attempt and removes its temporary listeners', async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      const client = new SocketRoomClient(socket as unknown as Socket<ServerToClientEvents, ClientToServerEvents>);
+      const rejection = expect(client.createRoom()).rejects.toThrow('Could not connect to the room server');
+
+      await vi.advanceTimersByTimeAsync(5_000);
+      await rejection;
+      // The constructor's long-lived handlers remain; ensureConnected's handlers do not.
+      expect(socket.handlers.get('connect')).toHaveLength(1);
+      expect(socket.handlers.get('connect_error')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -39,8 +39,8 @@ export const LOOT = {
   /** Token bucket sized for deliberate Space presses, not for held-key spam. */
   interactionBurstCapacity: 6,
   interactionRefillPerSecond: 6,
-  /** Retained per player so a resent request ID replays its original decision. */
-  interactionHistorySize: 32,
+  /** Larger than every commit one player can make in a 69-second match. */
+  interactionHistorySize: 128,
 } as const;
 
 /**
@@ -72,6 +72,6 @@ export const SHOVE = {
   /** Token bucket for spammed requests. Normal cooldown-paced play never reaches it. */
   burstCapacity: 3,
   refillPerSecond: 1,
-  /** Retained per player so a resent request ID replays its original decision. */
-  historySize: 32,
+  /** Larger than the cooldown-limited shove count in a 69-second match. */
+  historySize: 128,
 } as const;

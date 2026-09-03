@@ -25,11 +25,18 @@ export interface CreatedSession {
   expiresAt: Date;
 }
 
-function digestToken(token: string): string {
+export function digestSessionToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
+export interface ResolvedSession {
+  user: UserRow;
+  expiresAt: Date;
+}
+
 export class AuthService {
+  private readonly sessionInvalidationListeners = new Set<(tokenDigest: string) => void>();
+
   constructor(
     private readonly db: Database,
     private readonly sessionTtlMs: number,
@@ -67,28 +74,40 @@ export class AuthService {
 
     const result = await this.db.transaction(async (transaction) => {
       if (currentToken) {
-        await transaction.delete(sessions).where(eq(sessions.tokenHash, digestToken(currentToken)));
+        await transaction.delete(sessions).where(eq(sessions.tokenHash, digestSessionToken(currentToken)));
       }
       const session = await this.createSession(user.id, transaction);
       return { user, session };
     });
+    if (currentToken) this.notifySessionInvalidated(digestSessionToken(currentToken));
     return result;
   }
 
   async resolveSession(token: string): Promise<UserRow | null> {
-    const result = await this.db.select({ user: users })
+    return (await this.resolveSessionDetails(token))?.user ?? null;
+  }
+
+  async resolveSessionDetails(token: string): Promise<ResolvedSession | null> {
+    const result = await this.db.select({ user: users, expiresAt: sessions.expiresAt })
       .from(sessions)
       .innerJoin(users, eq(sessions.userId, users.id))
       .where(and(
-        eq(sessions.tokenHash, digestToken(token)),
+        eq(sessions.tokenHash, digestSessionToken(token)),
         gt(sessions.expiresAt, this.now()),
       ))
       .limit(1);
-    return result[0]?.user ?? null;
+    return result[0] ?? null;
   }
 
   async revokeSession(token: string): Promise<void> {
-    await this.db.delete(sessions).where(eq(sessions.tokenHash, digestToken(token)));
+    const tokenDigest = digestSessionToken(token);
+    await this.db.delete(sessions).where(eq(sessions.tokenHash, tokenDigest));
+    this.notifySessionInvalidated(tokenDigest);
+  }
+
+  onSessionInvalidated(listener: (tokenDigest: string) => void): () => void {
+    this.sessionInvalidationListeners.add(listener);
+    return () => this.sessionInvalidationListeners.delete(listener);
   }
 
   private async takenCredential(email: string): Promise<'email' | 'username'> {
@@ -107,11 +126,23 @@ export class AuthService {
     // without adding a process timer or a second deployment component.
     await database.delete(sessions).where(lte(sessions.expiresAt, currentTime));
     await database.insert(sessions).values({
-      tokenHash: digestToken(token),
+      tokenHash: digestSessionToken(token),
       userId,
       expiresAt,
     });
     return { token, expiresAt };
+  }
+
+  private notifySessionInvalidated(tokenDigest: string): void {
+    for (const listener of this.sessionInvalidationListeners) {
+      try {
+        listener(tokenDigest);
+      } catch (error) {
+        // Session persistence has already committed. One in-process consumer
+        // must not turn a successful login/logout into an HTTP 500.
+        console.error('Session invalidation listener failed', error);
+      }
+    }
   }
 }
 

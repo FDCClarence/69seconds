@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App.js';
 import { ApiError, type AuthApi } from './api.js';
 import type { MatchTally, RoomPublicState } from '@69-seconds/shared';
-import type { RoomClient, RoomClientListeners } from './room-client.js';
+import { RoomClientError, type RoomClient, type RoomClientListeners } from './room-client.js';
 import type { GroceryGameFactory } from './game/types.js';
 
 const player = {
@@ -354,6 +354,30 @@ describe('authentication application', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Connection lost — reconnecting');
     expect(alert.textContent).toContain('server still owns the match clock');
+  });
+
+  it('returns to login when the realtime session is revoked or expires', async () => {
+    let listeners: RoomClientListeners | undefined;
+    const rooms = roomClientStub({
+      subscribe: vi.fn((next) => {
+        listeners = next;
+        next.onConnection('CONNECTED');
+        return () => undefined;
+      }),
+    });
+    renderAt('/home', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
+    await screen.findByRole('button', { name: 'Create room' });
+
+    act(() => listeners?.onError(new RoomClientError(
+      'UNAUTHENTICATED',
+      'Your session has expired',
+      false,
+    )));
+
+    expect(await screen.findByRole('tab', { name: 'Log in' })).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('Your session expired');
+    expect(window.location.pathname).toBe('/');
+    expect(rooms.disconnect).toHaveBeenCalled();
   });
 
   it('keeps an unacknowledged network outcome visible until dismissed', async () => {

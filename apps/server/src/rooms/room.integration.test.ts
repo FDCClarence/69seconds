@@ -13,6 +13,7 @@ import { createServer, type Server as HttpServer } from 'node:http';
 import { io as createClient, type Socket as ClientSocket } from 'socket.io-client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { UserRow } from '../db/schema.js';
+import { digestSessionToken } from '../auth/service.js';
 import { attachSocketServer, type SocketServerHandle } from '../socket.js';
 
 type TestClient = ClientSocket<ServerToClientEvents, ClientToServerEvents>;
@@ -57,17 +58,36 @@ describe('authenticated Socket.IO room lifecycle', () => {
   let sockets: SocketServerHandle;
   let origin: string;
   let serverNowMs: number;
+  let invalidateSession: (token: string) => void;
+  let expireSessionIn: (token: string, delayMs: number) => void;
   const clients: TestClient[] = [];
 
   beforeEach(async () => {
     serverNowMs = 1_000;
     httpServer = createServer();
     const tokens = new Map(users.map((user, index) => [`token-${index + 1}`, user]));
+    const expirations = new Map([...tokens.keys()].map((token) => [token, Date.now() + 60 * 60_000]));
+    const invalidationListeners = new Set<(tokenDigest: string) => void>();
+    invalidateSession = (token) => {
+      tokens.delete(token);
+      for (const listener of invalidationListeners) listener(digestSessionToken(token));
+    };
+    expireSessionIn = (token, delayMs) => expirations.set(token, Date.now() + delayMs);
     sockets = attachSocketServer(httpServer, {
       webOrigins: ['http://localhost:5173'],
       cookie: { name: '69s_session' },
       auth: {
         resolveSession: async (token) => tokens.get(token) ?? null,
+        resolveSessionDetails: async (token) => {
+          const user = tokens.get(token);
+          const expiresAtMs = expirations.get(token);
+          if (!user || expiresAtMs === undefined || expiresAtMs <= Date.now()) return null;
+          return { user, expiresAt: new Date(expiresAtMs) };
+        },
+        onSessionInvalidated: (listener) => {
+          invalidationListeners.add(listener);
+          return () => { invalidationListeners.delete(listener); };
+        },
       },
       rooms: {
         reconnectGraceMs: 60,
@@ -181,6 +201,60 @@ describe('authenticated Socket.IO room lifecycle', () => {
       socket.connect();
     });
     expect(error.data?.code).toBe('UNAUTHENTICATED');
+    expect(socket.connected).toBe(false);
+  });
+
+  it('rejects a valid cookie presented from an untrusted browser origin', async () => {
+    const socket: TestClient = createClient(origin, {
+      autoConnect: false,
+      transports: ['websocket'],
+      extraHeaders: {
+        Cookie: '69s_session=token-1',
+        Origin: 'https://attacker.example',
+      },
+      forceNew: true,
+      reconnection: false,
+    });
+    clients.push(socket);
+    await new Promise<Error>((resolve) => {
+      socket.once('connect_error', resolve);
+      socket.connect();
+    });
+    expect(socket.connected).toBe(false);
+    expect(sockets.rooms.size).toBe(0);
+  });
+
+  it('disconnects sockets as soon as their authenticated session is revoked', async () => {
+    const socket = await connect(0);
+    const authenticationError = new Promise<string>((resolve) => {
+      socket.once('game:error', (error) => resolve(error.code));
+    });
+    const disconnected = new Promise<void>((resolve) => socket.once('disconnect', () => resolve()));
+    invalidateSession('token-1');
+    expect(await authenticationError).toBe('UNAUTHENTICATED');
+    await disconnected;
+    expect(socket.connected).toBe(false);
+
+    const replacement: TestClient = createClient(origin, {
+      autoConnect: false,
+      transports: ['websocket'],
+      extraHeaders: { Cookie: '69s_session=token-1' },
+      forceNew: true,
+      reconnection: false,
+    });
+    clients.push(replacement);
+    const error = await new Promise<Error & { data?: { code?: string } }>((resolve) => {
+      replacement.once('connect_error', resolve);
+      replacement.connect();
+    });
+    expect(error.data?.code).toBe('UNAUTHENTICATED');
+  });
+
+  it('disconnects an established socket when its session reaches its expiry', async () => {
+    expireSessionIn('token-1', 40);
+    const socket = await connect(0);
+    const disconnected = new Promise<void>((resolve) => socket.once('disconnect', () => resolve()));
+    await disconnected;
     expect(socket.connected).toBe(false);
   });
 

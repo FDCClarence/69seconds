@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../app.js';
 import { createDatabase, type DatabaseConnection } from '../db/client.js';
 import { sessions, users } from '../db/schema.js';
-import { AuthService } from './service.js';
+import { AuthService, digestSessionToken } from './service.js';
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const describeWithDatabase = databaseUrl ? describe : describe.skip;
@@ -27,6 +27,7 @@ describeWithDatabase('authentication HTTP integration', () => {
   let connection: DatabaseConnection;
   let now = new Date('2026-09-02T00:00:00.000Z');
   let app: ReturnType<typeof createApp>;
+  let auth: AuthService;
 
   beforeAll(async () => {
     const url = new URL(databaseUrl!);
@@ -37,7 +38,7 @@ describeWithDatabase('authentication HTTP integration', () => {
     await migrate(connection.db, {
       migrationsFolder: fileURLToPath(new URL('../../drizzle', import.meta.url)),
     });
-    const auth = new AuthService(connection.db, cookieConfig.ttlMs, () => now);
+    auth = new AuthService(connection.db, cookieConfig.ttlMs, () => now);
     app = createApp({
       auth,
       config: {
@@ -108,13 +109,18 @@ describeWithDatabase('authentication HTTP integration', () => {
     const registration = await agent.post('/api/auth/register')
       .send({ username: 'cart_goblin', email: 'player@example.com', password: 'correct-horse-battery' }).expect(201);
     const originalCookie = cookieFrom(registration);
+    const originalToken = originalCookie.slice(originalCookie.indexOf('=') + 1);
+    const invalidated: string[] = [];
+    const unsubscribe = auth.onSessionInvalidated((tokenDigest) => invalidated.push(tokenDigest));
 
     await request(app).post('/api/auth/login')
       .send({ identifier: ' Cart_Goblin ', password: 'correct-horse-battery' }).expect(200);
     const login = await agent.post('/api/auth/login')
       .send({ identifier: 'PLAYER@EXAMPLE.COM', password: 'correct-horse-battery' }).expect(200);
     const replacementCookie = cookieFrom(login);
+    unsubscribe();
     expect(replacementCookie).not.toBe(originalCookie);
+    expect(invalidated).toEqual([digestSessionToken(originalToken)]);
 
     await request(app).get('/api/auth/me').set('Cookie', originalCookie).expect(401);
     const current = await request(app).get('/api/auth/me').set('Cookie', replacementCookie).expect(200);

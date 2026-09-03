@@ -124,7 +124,19 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
     onRoom: setRoom,
     onResult: setMatchTally,
     onConnection: setConnection,
-    onError: (error) => setNotice(roomErrorMessage(error)),
+    onError: (error) => {
+      if (error.code === 'UNAUTHENTICATED') {
+        rooms.disconnect();
+        setRoom(null);
+        setMatchTally(null);
+        setAuth({ status: 'anonymous' });
+        setRestoreError('Your session expired. Log in again to continue.');
+        window.history.replaceState({}, '', '/');
+        setRoute('/');
+        return;
+      }
+      setNotice(roomErrorMessage(error));
+    },
     onClosed: () => {
       setRoom(null);
       setMatchTally(null);
@@ -136,6 +148,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
   useEffect(() => {
     if (auth.status === 'authenticated') rooms.connect();
     else rooms.disconnect();
+    return () => rooms.disconnect();
   }, [auth.status, rooms]);
   // The rendered screen follows the session, so the address bar is corrected to match it.
   useEffect(() => {

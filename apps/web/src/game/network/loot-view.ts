@@ -67,7 +67,7 @@ export function applyLootSync(view: LootView, sync: LootSync): LootView {
 }
 
 export function applyLootUpdate(view: LootView, update: LootUpdate): LootView {
-  if (!view.synchronized || update.sequence < view.sequence) return view;
+  if (!view.synchronized || update.sequence <= view.sequence) return view;
   const next: LootView = { ...view, sequence: update.sequence };
   next.carriedCounts = { ...view.carriedCounts, [update.playerId]: update.carriedCount };
 
@@ -82,7 +82,7 @@ export function applyLootUpdate(view: LootView, update: LootUpdate): LootView {
     return next;
   }
   next.carts = view.carts.map((cart) => cart.id === update.cartId
-    ? { ...cart, itemIds: [...cart.itemIds, ...update.itemIds] }
+    ? { ...cart, itemIds: appendUnique(cart.itemIds, update.itemIds) }
     : cart);
   return next;
 }
@@ -104,12 +104,16 @@ export function applyInteractionResult(view: LootView, result: InteractionResult
   }
   if (result.outcome === 'DEPOSITED') {
     next.carts = view.carts.map((cart) => cart.id === result.cartId
-      ? { ...cart, itemIds: [...cart.itemIds, ...result.itemIds] }
+      ? { ...cart, itemIds: appendUnique(cart.itemIds, result.itemIds) }
       : cart);
     return next;
   }
   // Rejected: dropping the pending entry restores the marker and the carry slot.
   return next;
+}
+
+function appendUnique(current: readonly string[], additions: readonly string[]): string[] {
+  return [...new Set([...current, ...additions])];
 }
 
 /** Clears a prediction whose acknowledgement never arrived. */

@@ -89,6 +89,7 @@ export class SocketRoomClient implements RoomClient {
   private readonly shoveLandedListeners = new Set<(event: ShoveLanded) => void>();
   private latestLootSync: LootSync | null = null;
   private readonly lootUpdatesSinceSync: LootUpdate[] = [];
+  private latestLootSequence = -1;
   private nextInputSequence = 0;
 
   constructor(private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>) {
@@ -132,7 +133,9 @@ export class SocketRoomClient implements RoomClient {
         this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received invalid loot state', retryable: true });
         return;
       }
+      if (parsed.data.sequence < this.latestLootSequence) return;
       this.latestLootSync = parsed.data;
+      this.latestLootSequence = parsed.data.sequence;
       this.lootUpdatesSinceSync.splice(0, this.lootUpdatesSinceSync.length);
       for (const listener of this.lootSyncListeners) listener(parsed.data);
     });
@@ -142,6 +145,8 @@ export class SocketRoomClient implements RoomClient {
         this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received invalid loot update', retryable: true });
         return;
       }
+      if (parsed.data.sequence <= this.latestLootSequence) return;
+      this.latestLootSequence = parsed.data.sequence;
       if (
         this.latestLootSync?.roomCode === parsed.data.roomCode
         && parsed.data.sequence > this.latestLootSync.sequence
@@ -317,6 +322,10 @@ export class SocketRoomClient implements RoomClient {
     if (this.socket.connected) return Promise.resolve();
     this.connect();
     return new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new RoomClientError('INTERNAL_ERROR', 'Could not connect to the room server', true));
+      }, 5_000);
       const onConnect = () => {
         cleanup();
         resolve();
@@ -326,6 +335,7 @@ export class SocketRoomClient implements RoomClient {
         reject(error);
       };
       const cleanup = () => {
+        window.clearTimeout(timeout);
         this.socket.off('connect', onConnect);
         this.socket.off('connect_error', onError);
       };
@@ -368,6 +378,7 @@ export class SocketRoomClient implements RoomClient {
 
   private clearGameplayCache(): void {
     this.latestLootSync = null;
+    this.latestLootSequence = -1;
     this.lootUpdatesSinceSync.splice(0, this.lootUpdatesSinceSync.length);
   }
 

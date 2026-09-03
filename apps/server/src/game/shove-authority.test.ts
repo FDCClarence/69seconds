@@ -208,6 +208,31 @@ describe('authoritative shove decisions', () => {
     expect(replay.landed).toBeNull();
   });
 
+  it('retains replay protection for every cooldown-paced shove in one match', () => {
+    const shoves = authority();
+    const firstRequest = request({ targetPlayerId: 'target' });
+    const first = shoves.resolve(context(PAIR, { request: firstRequest }));
+    expect(first.result.outcome).toBe('LANDED');
+
+    // Forty later commits exceed the old 32-entry cache while remaining inside
+    // the fixed 69-second looting window and respecting every cooldown.
+    for (let index = 1; index <= 40; index += 1) {
+      const resolution = shoves.resolve(context(PAIR, {
+        request: request({ targetPlayerId: 'target' }),
+        serverNowMs: 10_000 + index * SHOVE.cooldownMs,
+      }));
+      expect(resolution.result.outcome).toBe('LANDED');
+    }
+
+    const replay = shoves.resolve(context(PAIR, {
+      request: firstRequest,
+      serverNowMs: 10_000 + 41 * SHOVE.cooldownMs,
+    }));
+    expect(replay.replayed).toBe(true);
+    expect(replay.result).toEqual(first.result);
+    expect(replay.landed).toBeNull();
+  });
+
   it('closes shoving outside the looting window', () => {
     const shoves = authority();
     expect(shoves.resolve(context(PAIR, {

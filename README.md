@@ -1,6 +1,6 @@
 # 69 Seconds
 
-Foundation for a browser-based, server-authoritative multiplayer grocery scramble. The repository includes shared network/domain contracts, a React authentication and lobby client, an Express/Socket.IO server with private in-memory rooms, and MySQL-backed account/session authentication. Phaser gameplay is not implemented yet.
+A complete vertical slice of a browser-based, server-authoritative multiplayer grocery scramble. It includes MySQL-backed authentication, private one-to-four-player rooms, the 69-second Phaser looting match, authoritative movement/loot/sprint/shove rules, and the final tally.
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@ Foundation for a browser-based, server-authoritative multiplayer grocery scrambl
 ## Setup
 
 ```bash
-npm install
+npm ci
 docker compose up -d db
 docker compose exec db mysql -uroot -pmysql -e "CREATE DATABASE IF NOT EXISTS sixtynine_seconds_test"
 cp apps/server/.env.example apps/server/.env
@@ -66,8 +66,8 @@ Target one workspace with npm's `-w` flag, for example `npm test -w @69-seconds/
 
 ## Repository layout
 
-- `apps/web` — React/Vite shell and, later, the React-to-Phaser game host.
-- `apps/server` — Express/Socket.IO process and future authoritative simulation.
+- `apps/web` — React/Vite shell and the route-scoped Phaser game host.
+- `apps/server` — Express/Socket.IO process and authoritative room simulations.
 - `apps/server/drizzle` — committed MySQL migrations and Drizzle migration metadata.
 - `packages/shared` — framework-free constants, schemas, event maps, state types, and pure rules.
 - `docs` — gameplay specification, architecture decisions, deployment runbook, and implementation handoff.

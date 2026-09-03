@@ -49,11 +49,28 @@ test('four isolated players complete auth, room start, reconnection, and the 69-
       await expect(page.getByText('Server synchronized')).toBeVisible();
     }
 
+    // A brief transport loss pauses intent, preserves the authoritative slot,
+    // and resynchronizes the same in-progress match when the network returns.
+    const reconnectingPage = pages[2]!;
+    await contexts[2]!.setOffline(true);
+    await expect(reconnectingPage.getByText('Connection lost — reconnecting')).toBeVisible();
+    await contexts[2]!.setOffline(false);
+    await expect(reconnectingPage.getByText('Server synchronized')).toBeVisible({ timeout: 15_000 });
+
+    // The full gameplay HUD remains usable at the documented minimum width.
+    const narrowPage = pages[3]!;
+    await narrowPage.setViewportSize({ width: 320, height: 568 });
+    await expect(narrowPage.getByRole('button', { name: 'Settings' })).toBeVisible();
+    expect(await narrowPage.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(320);
+
     // The production duration is intentionally not shortened by the fixture.
     for (const page of pages) {
       await expect(page.getByRole('heading', { name: /Time.s up/i })).toBeVisible({ timeout: 75_000 });
       await expect(page.getByText('final server tally')).toBeVisible();
     }
+    expect(await narrowPage.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(320);
   } finally {
     await Promise.all(contexts.map((context) => context.close()));
   }

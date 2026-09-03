@@ -29,7 +29,7 @@ import type { Server as HttpServer } from 'node:http';
 import { Server, type Socket } from 'socket.io';
 import type { ZodType } from 'zod';
 import { readSessionTokenFromCookieHeader, type SessionCookieConfig } from './auth/cookies.js';
-import type { AuthService } from './auth/service.js';
+import { digestSessionToken, type AuthService } from './auth/service.js';
 import { REJECTION_MESSAGES, type LootAuthorityOptions } from './game/loot-authority.js';
 import { AuthoritativeRoomSimulation } from './game/simulation.js';
 import { SHOVE_REJECTION_MESSAGES, type ShoveAuthorityOptions } from './game/shove-authority.js';
@@ -40,7 +40,10 @@ type GameSocket = Socket<ClientToServerEvents, ServerToClientEvents, InterServer
 
 export interface SocketServerOptions {
   webOrigins: string[];
-  auth: Pick<AuthService, 'resolveSession'>;
+  auth: Pick<AuthService, 'resolveSession'> & Partial<Pick<
+    AuthService,
+    'resolveSessionDetails' | 'onSessionInvalidated'
+  >>;
   cookie: Pick<SessionCookieConfig, 'name'>;
   rooms?: Omit<RoomRegistryOptions, 'onEvent'>;
   /** Test seam for placing loot; production uses the shared store map. */
@@ -135,8 +138,17 @@ function requestIdFrom(payload: unknown): string {
 export function attachSocketServer(httpServer: HttpServer, options: SocketServerOptions): SocketServerHandle {
   const io: GameServer = new Server(httpServer, {
     cors: { origin: options.webOrigins, credentials: true },
+    // Socket.IO's CORS setting protects polling, but browsers can open a WebSocket
+    // directly. Validate its Origin here as well to prevent cross-site socket use
+    // with an ambient session cookie. Non-browser clients do not send Origin.
+    allowRequest: (request, callback) => {
+      const origin = request.headers.origin;
+      callback(null, origin === undefined || options.webOrigins.includes(origin));
+    },
     maxHttpBufferSize: NETWORK.maxPayloadBytes,
   });
+  const authenticatedSessions = new Map<string, { tokenDigest: string; expiresAtMs: number | null }>();
+  const sessionExpiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const simulations = new Map<string, AuthoritativeRoomSimulation>();
   const now = options.rooms?.now ?? Date.now;
   const rooms = new RoomRegistry({
@@ -202,6 +214,18 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
   }, 1_000 / NETWORK.simulationTickRateHz);
   simulationTimer.unref?.();
 
+  const unsubscribeSessionInvalidation = options.auth.onSessionInvalidated?.((tokenDigest) => {
+    for (const socket of io.sockets.sockets.values()) {
+      if (authenticatedSessions.get(socket.id)?.tokenDigest !== tokenDigest) continue;
+      socket.emit('game:error', publicError(
+        'UNAUTHENTICATED',
+        'Your session is no longer valid',
+        'session',
+      ));
+      socket.disconnect(true);
+    }
+  });
+
   io.use(async (socket, next) => {
     const token = readSessionTokenFromCookieHeader(socket.handshake.headers.cookie, options.cookie);
     if (!token) {
@@ -211,7 +235,11 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       return;
     }
     try {
-      const user = await options.auth.resolveSession(token);
+      const supportsSessionDetails = options.auth.resolveSessionDetails !== undefined;
+      const details = supportsSessionDetails
+        ? await options.auth.resolveSessionDetails!(token)
+        : null;
+      const user = supportsSessionDetails ? details?.user ?? null : await options.auth.resolveSession(token);
       if (!user) {
         const error = new Error('Authentication is required') as Error & { data: ServerError };
         error.data = publicError('UNAUTHENTICATED', 'Authentication is required', 'connect');
@@ -221,6 +249,10 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       socket.data.playerId = user.id;
       socket.data.playerUsername = user.username;
       socket.data.playerEmail = user.email;
+      authenticatedSessions.set(socket.id, {
+        tokenDigest: digestSessionToken(token),
+        expiresAtMs: details?.expiresAt.getTime() ?? null,
+      });
       next();
     } catch (cause) {
       console.error(cause);
@@ -239,6 +271,27 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       return;
     }
     const identity = { id: playerId, username: playerUsername, email: playerEmail };
+
+    const scheduleSessionExpiry = (): void => {
+      const expiresAtMs = authenticatedSessions.get(socket.id)?.expiresAtMs;
+      if (expiresAtMs === null || expiresAtMs === undefined) return;
+      const remainingMs = expiresAtMs - Date.now();
+      if (remainingMs <= 0) {
+        socket.emit('game:error', publicError(
+          'UNAUTHENTICATED',
+          'Your session has expired',
+          'session',
+        ));
+        socket.disconnect(true);
+        return;
+      }
+      // Node clamps longer timeouts to one millisecond. Re-arm long-lived
+      // sessions in safe chunks so the default 30-day session does not expire early.
+      const timer = setTimeout(scheduleSessionExpiry, Math.min(remainingMs, 2_147_000_000));
+      timer.unref?.();
+      sessionExpiryTimers.set(socket.id, timer);
+    };
+    scheduleSessionExpiry();
 
     let eventTokens: number = NETWORK.socketEventBurstCapacity;
     let eventTokensRefilledAtMs = now();
@@ -433,6 +486,10 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     });
 
     socket.on('disconnect', () => {
+      const expiryTimer = sessionExpiryTimers.get(socket.id);
+      if (expiryTimer) clearTimeout(expiryTimer);
+      sessionExpiryTimers.delete(socket.id);
+      authenticatedSessions.delete(socket.id);
       const code = rooms.roomForPlayer(playerId);
       if (code) simulations.get(code)?.resetInput(playerId, true);
       const room = rooms.disconnect(playerId, socket.id);
@@ -448,6 +505,10 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     rooms,
     async close() {
       clearInterval(simulationTimer);
+      unsubscribeSessionInvalidation?.();
+      for (const timer of sessionExpiryTimers.values()) clearTimeout(timer);
+      sessionExpiryTimers.clear();
+      authenticatedSessions.clear();
       simulations.clear();
       rooms.close();
       await new Promise<void>((resolve) => io.close(() => resolve()));

@@ -14,7 +14,7 @@ Schemas are the source of truth for network shapes; TypeScript types are inferre
 
 ### `apps/server`
 
-Owns process configuration, HTTP routes/middleware, Socket.IO transport, future sessions and persistence adapters, room registry, authoritative simulation, clocks, and concurrency resolution. Transport handlers validate payloads, recover trusted identity from the session/socket context, call domain/application services, and serialize public results. They do not trust player IDs, positions, inventory, phase, or timestamps supplied as claims by clients.
+Owns process configuration, HTTP routes/middleware, Socket.IO transport, sessions and persistence adapters, room registry, authoritative simulation, clocks, and concurrency resolution. Transport handlers validate payloads, recover trusted identity from the session/socket context, call domain/application services, and serialize public results. They do not trust player IDs, positions, inventory, phase, or timestamps supplied as claims by clients.
 
 ### `apps/web`
 
@@ -48,7 +48,7 @@ The committed migrations create normalized, uniquely indexed users and expiring 
 ## Socket.IO connection and message flow
 
 1. The browser first restores its HTTP session.
-2. Socket.IO connects with cookies/credentials; connection middleware resolves the same server session and stores the trusted `playerId`, username, and account email in socket data. Missing, expired, and invalid sessions fail the handshake with `UNAUTHENTICATED`.
+2. Socket.IO connects with cookies/credentials; the handshake requires an allowed browser Origin and middleware resolves the same server session into trusted identity. Missing, expired, invalid, and revoked sessions fail or terminate with `UNAUTHENTICATED`; each connected socket is also closed at its database session expiry.
 3. Room create/join/leave, ready, and start commands locate a server-owned in-memory room and authorize that trusted player. Clients never submit an identity, slot, readiness for another player, or host claim.
 4. During gameplay the client emits intent events: `input:update`, `interaction:request`, and `shove:request`.
 5. The transport parses each payload with its shared Zod schema, applies rate/size controls, and passes validated intent to the room simulation.
