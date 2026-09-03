@@ -305,13 +305,19 @@ describe('authentication application', () => {
 
   it('keeps gameplay keys scoped, prevents browser actions, and exposes rebindable controls', async () => {
     const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
-    const nativeGameKeyDown = vi.fn();
+    // Mirrors Phaser's KeyboardManager: a bubble-phase listener on the game host
+    // that reads `defaultPrevented` at delivery time and drops handled events.
+    const gameKeysSeen: { code: string; defaultPrevented: boolean }[] = [];
+    const nativeGameKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      gameKeysSeen.push({ code: event.code, defaultPrevented: event.defaultPrevented });
+    };
     const synchronizedFactory: GroceryGameFactory = (parent, callbacks) => {
-      parent.addEventListener('keydown', nativeGameKeyDown);
+      parent.addEventListener('keydown', nativeGameKeyDown as EventListener);
       parent.append(document.createElement('canvas'));
       callbacks.onReady?.();
       callbacks.onInventoryChange?.({ carriedItems: [], depositedCount: 0, synchronized: true });
-      return { destroy: () => parent.removeEventListener('keydown', nativeGameKeyDown) };
+      return { destroy: () => parent.removeEventListener('keydown', nativeGameKeyDown as EventListener) };
     };
     renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
       joinRoom: vi.fn().mockResolvedValue(startedLobby),
@@ -325,8 +331,15 @@ describe('authentication application', () => {
     expect(game.dispatchEvent(move)).toBe(false);
     expect(game.dispatchEvent(space)).toBe(false);
     expect(game.dispatchEvent(control)).toBe(false);
-    expect(nativeGameKeyDown.mock.calls.map((call) => (call[0] as KeyboardEvent).code)).toEqual([
-      'KeyW', 'Space', 'ControlLeft',
+    // Phaser's KeyboardManager listens on this same host element in the bubble
+    // phase and ignores any event that is already `defaultPrevented`, so the
+    // browser default must be cancelled after the game has read the key, never
+    // before it. Cancelling in the capture phase leaves the shopper unable to
+    // move, sprint, interact or shove for the whole match.
+    expect(gameKeysSeen).toEqual([
+      { code: 'KeyW', defaultPrevented: false },
+      { code: 'Space', defaultPrevented: false },
+      { code: 'ControlLeft', defaultPrevented: false },
     ]);
 
     await userEvent.click(screen.getByRole('button', { name: 'Settings' }));

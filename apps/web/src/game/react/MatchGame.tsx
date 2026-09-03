@@ -186,6 +186,14 @@ export function MatchGame({
   const inventoryFull = inventory.carriedItems.length >= GAME.maxCarriedItems;
   const feedbackTone = feedback ? feedbackClass(feedback) : '';
 
+  /**
+   * Bubble phase on purpose. Phaser's KeyboardManager listens on this same host
+   * element and drops any event whose `defaultPrevented` is already set, so a
+   * capture-phase `preventDefault` here (React binds capture listeners on the
+   * root container, above this element) would silently kill every gameplay key.
+   * Cancelling after the game has read the event still suppresses the browser
+   * default, and covers the modified-key case Phaser's own capture list skips.
+   */
   function captureGameplayKey(event: ReactKeyboardEvent<HTMLDivElement>): void {
     if (Object.values(bindings).includes(event.code)) {
       event.preventDefault();
@@ -206,7 +214,7 @@ export function MatchGame({
       aria-label="69 Seconds grocery store. Focus to control your shopper; Tab releases gameplay controls."
       aria-keyshortcuts={`${bindingLabel(bindings.interact)} ${bindingLabel(bindings.shove)}`}
       onPointerDown={focusGame}
-      onKeyDownCapture={captureGameplayKey}
+      onKeyDown={captureGameplayKey}
       onBlur={() => gameHost.current?.dispatchEvent(new Event('game-input-blur'))}
     />
 
