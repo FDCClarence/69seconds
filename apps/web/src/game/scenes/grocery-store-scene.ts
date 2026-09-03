@@ -68,6 +68,14 @@ const LOOT_MARKER_SIZE = 40;
 const LOOT_HOVER_BASELINE = -3;
 const LOOT_HOVER_HEIGHT = 10;
 
+interface LootPresentation {
+  root: Phaser.GameObjects.Container;
+  hoverLayer: Phaser.GameObjects.Container;
+  shadow: Phaser.GameObjects.Ellipse;
+  bobPeriodMs: number;
+  phaseOffset: number;
+}
+
 /** Texture key for one catalog item's art. */
 function lootTextureKey(catalogId: string): string {
   return `loot-art-${catalogId}`;
@@ -80,7 +88,7 @@ export class GroceryStoreScene extends Phaser.Scene {
   private feedbackText?: Phaser.GameObjects.Text;
   private promptText?: Phaser.GameObjects.Text;
   private lootView: LootView = createLootView();
-  private readonly lootObjects = new Map<string, Phaser.GameObjects.Container>();
+  private readonly lootObjects = new Map<string, LootPresentation>();
   private readonly remotePlayers = new Map<string, PlayerEntity>();
   private readonly remoteBuffers = new Map<string, RemoteInterpolationBuffer>();
   private pendingInputs: ClientInput[] = [];
@@ -189,7 +197,8 @@ export class GroceryStoreScene extends Phaser.Scene {
     this.callbacks.onReady?.();
   }
 
-  override update(_time: number, deltaMs: number): void {
+  override update(time: number, deltaMs: number): void {
+    this.updateLootPresentation(time);
     if (!this.player || !this.controls) return;
     const frame = this.controls.read();
     const recovering = this.isRecovering();
@@ -479,7 +488,7 @@ export class GroceryStoreScene extends Phaser.Scene {
   }
 
   private rebuildLootObjects(): void {
-    for (const lootObject of this.lootObjects.values()) lootObject.destroy();
+    for (const lootObject of this.lootObjects.values()) lootObject.root.destroy();
     this.lootObjects.clear();
     for (const item of Object.values(this.lootView.items)) {
       this.lootObjects.set(item.id, this.createLootObject(item.id, item.catalogId, item.position.x, item.position.y));
@@ -489,7 +498,22 @@ export class GroceryStoreScene extends Phaser.Scene {
 
   private refreshLootVisibility(): void {
     for (const [itemId, lootObject] of this.lootObjects) {
-      lootObject.setVisible(isItemVisible(this.lootView, itemId));
+      lootObject.root.setVisible(isItemVisible(this.lootView, itemId));
+    }
+  }
+
+  private updateLootPresentation(time: number): void {
+    const reducedMotion = this.reducedMotion();
+    for (const lootObject of this.lootObjects.values()) {
+      // One sine wave drives both parts of the illusion: as the artwork rises,
+      // its floor shadow becomes smaller and lighter; descending reverses it.
+      const lift = reducedMotion
+        ? 0
+        : (Math.sin((time / lootObject.bobPeriodMs) * Math.PI * 2 + lootObject.phaseOffset) + 1) / 2;
+      lootObject.hoverLayer.y = LOOT_HOVER_BASELINE - LOOT_HOVER_HEIGHT * lift;
+      lootObject.shadow
+        .setScale(Phaser.Math.Linear(1, 0.68, lift), Phaser.Math.Linear(1, 0.62, lift))
+        .setAlpha(Phaser.Math.Linear(0.42, 0.2, lift));
     }
   }
 
@@ -498,7 +522,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     return assignedCartIdForSlot(slot);
   }
 
-  private createLootObject(id: string, catalogId: string, x: number, y: number): Phaser.GameObjects.Container {
+  private createLootObject(id: string, catalogId: string, x: number, y: number): LootPresentation {
     const catalog = lootCatalogEntry(catalogId);
     const shadow = this.add.ellipse(0, LOOT_MARKER_SIZE / 2 - 2, LOOT_MARKER_SIZE * 0.72, 9, 0x0d1a1c, 0.42);
     const hoveringParts: Phaser.GameObjects.GameObject[] = [];
@@ -522,48 +546,30 @@ export class GroceryStoreScene extends Phaser.Scene {
     const sparkle = this.add.star(15, -13, 4, 1, 3.5, 0xfff2b0, 0).setAlpha(0);
     hoverLayer.add(sparkle);
 
-    const lootObject = this.add.container(x, y, [shadow, hoverLayer]).setName(id).setDepth(1_000 + y - 4);
-    if (this.reducedMotion()) return lootObject;
-
-    // Each item gets a slightly different cadence, avoiding a mechanically
-    // synchronized field while leaving its authoritative interaction position intact.
-    const bobDuration = Phaser.Math.Between(1_100, 1_500);
-    const bobDelay = Phaser.Math.Between(0, 450);
-    this.tweens.add({
-      targets: hoverLayer,
-      y: LOOT_HOVER_BASELINE - LOOT_HOVER_HEIGHT,
-      duration: bobDuration,
-      ease: 'Sine.easeInOut',
-      yoyo: true,
-      repeat: -1,
-      delay: bobDelay,
-    });
-    this.tweens.add({
-      targets: shadow,
-      scaleX: 0.68,
-      scaleY: 0.62,
-      alpha: 0.2,
-      duration: bobDuration,
-      ease: 'Sine.easeInOut',
-      yoyo: true,
-      repeat: -1,
-      delay: bobDelay,
-    });
-    this.tweens.add({
-      targets: sparkle,
-      alpha: 0.9,
-      scaleX: 1.25,
-      scaleY: 1.25,
-      angle: 45,
-      duration: 220,
-      ease: 'Sine.easeOut',
-      yoyo: true,
-      hold: 80,
-      repeat: -1,
-      repeatDelay: Phaser.Math.Between(1_500, 3_800),
-      delay: Phaser.Math.Between(300, 1_600),
-    });
-    return lootObject;
+    const root = this.add.container(x, y, [shadow, hoverLayer]).setName(id).setDepth(1_000 + y - 4);
+    if (!this.reducedMotion()) {
+      this.tweens.add({
+        targets: sparkle,
+        alpha: 0.9,
+        scaleX: 1.25,
+        scaleY: 1.25,
+        angle: 45,
+        duration: 220,
+        ease: 'Sine.easeOut',
+        yoyo: true,
+        hold: 80,
+        repeat: -1,
+        repeatDelay: Phaser.Math.Between(1_500, 3_800),
+        delay: Phaser.Math.Between(300, 1_600),
+      });
+    }
+    return {
+      root,
+      hoverLayer,
+      shadow,
+      bobPeriodMs: Phaser.Math.Between(2_500, 3_200),
+      phaseOffset: Phaser.Math.FloatBetween(0, Math.PI * 2),
+    };
   }
 
   /** Mirrors the server's radius and line-of-access checks so prompts stay honest. */
