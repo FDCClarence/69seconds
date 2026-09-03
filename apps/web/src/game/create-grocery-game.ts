@@ -12,6 +12,12 @@ export const createGroceryGame: GroceryGameFactory = (parent, callbacks) => new 
   // second AudioContext whose delayed visibility callback can race teardown
   // and try to suspend/resume an already closed context in SPA navigation.
   audio: { noAudio: true },
+  // Without a timeout, a stalled item-art request (dropped connection, slow
+  // dev server) leaves the loader waiting forever and `create()` — which is
+  // what flips the "Opening the store" overlay off — never runs. Item art
+  // falls back to a placeholder anyway, so a timed-out file just means that
+  // one item renders as `?` instead of blocking the whole match from loading.
+  loader: { timeout: 8_000 },
   scene: new GroceryStoreScene(callbacks),
   physics: {
     default: 'arcade',
