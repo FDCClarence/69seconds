@@ -64,6 +64,9 @@ const MAP_HEIGHT = GENERATED_GROCERY_STORE_MAP.height;
 const SHELF_TEXTURE = 'prototype-shelf';
 /** On-map footprint of an item marker, in world pixels. */
 const LOOT_MARKER_SIZE = 40;
+/** Small presentational lift that makes loot read as hovering over the floor. */
+const LOOT_HOVER_BASELINE = -3;
+const LOOT_HOVER_HEIGHT = 5;
 
 /** Texture key for one catalog item's art. */
 function lootTextureKey(catalogId: string): string {
@@ -498,14 +501,14 @@ export class GroceryStoreScene extends Phaser.Scene {
   private createLootObject(id: string, catalogId: string, x: number, y: number): Phaser.GameObjects.Container {
     const catalog = lootCatalogEntry(catalogId);
     const shadow = this.add.ellipse(0, LOOT_MARKER_SIZE / 2 - 2, LOOT_MARKER_SIZE * 0.72, 9, 0x0d1a1c, 0.42);
-    const parts: Phaser.GameObjects.GameObject[] = [shadow];
+    const hoveringParts: Phaser.GameObjects.GameObject[] = [];
     const textureKey = lootTextureKey(catalog.id);
     if (this.textures.exists(textureKey)) {
-      parts.push(this.add.image(0, 0, textureKey).setDisplaySize(LOOT_MARKER_SIZE, LOOT_MARKER_SIZE));
+      hoveringParts.push(this.add.image(0, 0, textureKey).setDisplaySize(LOOT_MARKER_SIZE, LOOT_MARKER_SIZE));
     } else {
       // No art for this item yet: a tinted disc carrying a question mark stands
       // in, so an unillustrated item is still visible and still identifiable.
-      parts.push(
+      hoveringParts.push(
         this.add.circle(0, 0, 15, catalog.color).setStrokeStyle(3, 0x213a37),
         this.add.text(0, 0, '?', {
           color: '#213a37', fontFamily: 'monospace', fontSize: '17px', fontStyle: 'bold',
@@ -515,7 +518,52 @@ export class GroceryStoreScene extends Phaser.Scene {
         }).setOrigin(0.5),
       );
     }
-    return this.add.container(x, y, parts).setName(id).setDepth(1_000 + y - 4);
+    const hoverLayer = this.add.container(0, LOOT_HOVER_BASELINE, hoveringParts);
+    const sparkle = this.add.star(15, -13, 4, 1, 3.5, 0xfff2b0, 0).setAlpha(0);
+    hoverLayer.add(sparkle);
+
+    const lootObject = this.add.container(x, y, [shadow, hoverLayer]).setName(id).setDepth(1_000 + y - 4);
+    if (this.reducedMotion()) return lootObject;
+
+    // Each item gets a slightly different cadence, avoiding a mechanically
+    // synchronized field while leaving its authoritative interaction position intact.
+    const bobDuration = Phaser.Math.Between(1_650, 2_350);
+    const bobDelay = Phaser.Math.Between(0, bobDuration);
+    this.tweens.add({
+      targets: hoverLayer,
+      y: LOOT_HOVER_BASELINE - LOOT_HOVER_HEIGHT,
+      duration: bobDuration,
+      ease: 'Sine.easeInOut',
+      yoyo: true,
+      repeat: -1,
+      delay: bobDelay,
+    });
+    this.tweens.add({
+      targets: shadow,
+      scaleX: 0.76,
+      scaleY: 0.72,
+      alpha: 0.25,
+      duration: bobDuration,
+      ease: 'Sine.easeInOut',
+      yoyo: true,
+      repeat: -1,
+      delay: bobDelay,
+    });
+    this.tweens.add({
+      targets: sparkle,
+      alpha: 0.9,
+      scaleX: 1.25,
+      scaleY: 1.25,
+      angle: 45,
+      duration: 220,
+      ease: 'Sine.easeOut',
+      yoyo: true,
+      hold: 80,
+      repeat: -1,
+      repeatDelay: Phaser.Math.Between(1_500, 3_800),
+      delay: Phaser.Math.Between(300, 1_600),
+    });
+    return lootObject;
   }
 
   /** Mirrors the server's radius and line-of-access checks so prompts stay honest. */
