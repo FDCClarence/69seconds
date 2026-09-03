@@ -91,11 +91,11 @@ export const LOOT_CATALOG = [
   { id: 'chess-board', label: 'Chess Board', shortLabel: 'CHS', color: 0x5b4636, category: 'entertainment', rarity: 'rare', image: 'chess-board.png' },
 
   // Misc
-  { id: 'map', label: 'Map', shortLabel: 'MAP', color: 0xc2b280, category: 'misc', rarity: 'uncommon', image: null },
-  { id: 'radio', label: 'Radio', shortLabel: 'RAD', color: 0x7a8b99, category: 'misc', rarity: 'rare', image: null },
-  { id: 'lock-and-key', label: 'Lock and Key', shortLabel: 'LCK', color: 0xb8a13a, category: 'misc', rarity: 'rare', image: null },
-  { id: 'pistol-bullets', label: 'Pistol Bullets', shortLabel: 'AMO', color: 0x8c7853, category: 'misc', rarity: 'rare', image: null },
-  { id: 'methamphetamine', label: 'Methamphetamine', shortLabel: 'MTH', color: 0xb6e3ee, category: 'misc', rarity: 'epic', image: null },
+  { id: 'map', label: 'Map', shortLabel: 'MAP', color: 0xc2b280, category: 'misc', rarity: 'uncommon', image: 'map.png' },
+  { id: 'radio', label: 'Radio', shortLabel: 'RAD', color: 0x7a8b99, category: 'misc', rarity: 'rare', image: 'radio.png' },
+  { id: 'lock-and-key', label: 'Lock and Key', shortLabel: 'LCK', color: 0xb8a13a, category: 'misc', rarity: 'rare', image: 'lock-and-key.png' },
+  { id: 'pistol-bullets', label: 'Pistol Bullets', shortLabel: 'AMO', color: 0x8c7853, category: 'misc', rarity: 'rare', image: 'bullets.png' },
+  { id: 'methamphetamine', label: 'Methamphetamine', shortLabel: 'MTH', color: 0xb6e3ee, category: 'misc', rarity: 'epic', image: 'meth.png' },
 ] as const satisfies readonly LootCatalogEntry[];
 
 export type LootCatalogId = (typeof LOOT_CATALOG)[number]['id'];

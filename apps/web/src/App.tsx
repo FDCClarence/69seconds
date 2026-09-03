@@ -7,6 +7,7 @@ import {
   type MatchTally,
   type PublicUser,
   type RoomPublicState,
+  type TallyItem,
 } from '@69-seconds/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { authApi, ApiError, type AuthApi } from './api.js';
@@ -606,6 +607,16 @@ const CATEGORY_LABELS: Record<LootCategory, string> = {
   misc: 'Misc',
 };
 
+function groupTallyItems(items: TallyItem[]): { catalogId: string; label: string; quantity: number }[] {
+  const groups = new Map<string, { catalogId: string; label: string; quantity: number }>();
+  for (const item of items) {
+    const existing = groups.get(item.catalogId);
+    if (existing) existing.quantity += 1;
+    else groups.set(item.catalogId, { catalogId: item.catalogId, label: item.label, quantity: 1 });
+  }
+  return [...groups.values()];
+}
+
 function TallyScreen({ room, result, user, onLeave, onLogout }: {
   room: RoomPublicState;
   result: MatchTally | null;
@@ -648,10 +659,10 @@ function TallyScreen({ room, result, user, onLeave, onLogout }: {
             </header>
             <p className="tally-connection">{player.isConnectedAtEnd ? 'Present at the buzzer' : 'Disconnected at the buzzer'}</p>
             {player.items.length > 0 ? <ul className="tally-items">
-              {player.items.map((item) => <li key={item.id}>
-                <TallyItemArt catalogId={item.catalogId} label={item.label} />
-                <span>{item.label}</span>
-                <small>{CATEGORY_LABELS[item.category]}</small>
+              {groupTallyItems(player.items).map((group) => <li key={group.catalogId}>
+                <TallyItemArt catalogId={group.catalogId} label={group.label} />
+                <span>{group.label}</span>
+                {group.quantity > 1 && <strong className="tally-item-quantity">{group.quantity}x</strong>}
               </li>)}
             </ul> : <p className="tally-empty">No deposited items</p>}
             {player.categoryTotals.length > 0 && <p className="tally-player-categories">
