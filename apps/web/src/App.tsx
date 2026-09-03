@@ -1,5 +1,7 @@
 import {
   GAME,
+  lootCatalogEntry,
+  lootImageUrl,
   roomCodeSchema,
   type LootCategory,
   type MatchTally,
@@ -587,6 +589,15 @@ function Lobby({ code, room, matchTally, user, connection, networkError, onDismi
   </main>;
 }
 
+/** Deposited-item thumbnail, falling back to a `?` chip for unillustrated items. */
+function TallyItemArt({ catalogId, label }: { catalogId: string; label: string }) {
+  const entry = lootCatalogEntry(catalogId);
+  const url = lootImageUrl(entry);
+  return url
+    ? <img className="tally-art" src={url} alt="" title={label} />
+    : <b className="tally-art is-placeholder" style={{ backgroundColor: `#${entry.color.toString(16).padStart(6, '0')}` }} title={label}>?</b>;
+}
+
 const CATEGORY_LABELS: Record<LootCategory, string> = {
   food: 'Food',
   weapons: 'Weapons',
@@ -637,7 +648,11 @@ function TallyScreen({ room, result, user, onLeave, onLogout }: {
             </header>
             <p className="tally-connection">{player.isConnectedAtEnd ? 'Present at the buzzer' : 'Disconnected at the buzzer'}</p>
             {player.items.length > 0 ? <ul className="tally-items">
-              {player.items.map((item) => <li key={item.id}><span>{item.label}</span><small>{CATEGORY_LABELS[item.category]}</small></li>)}
+              {player.items.map((item) => <li key={item.id}>
+                <TallyItemArt catalogId={item.catalogId} label={item.label} />
+                <span>{item.label}</span>
+                <small>{CATEGORY_LABELS[item.category]}</small>
+              </li>)}
             </ul> : <p className="tally-empty">No deposited items</p>}
             {player.categoryTotals.length > 0 && <p className="tally-player-categories">
               {player.categoryTotals.map((total) => `${CATEGORY_LABELS[total.category]} ${total.count}`).join(' · ')}

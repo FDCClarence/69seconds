@@ -13,7 +13,9 @@ import {
   isMoving,
   isWithinFacingCone,
   isWithinInteractionRadius,
+  LOOT_CATALOG,
   lootCatalogEntry,
+  lootImageUrl,
   movementAxis,
   movementVelocity,
   normalizeMovementVector,
@@ -60,6 +62,13 @@ import type { GameFeedback, GroceryGameCallbacks, SprintHudState } from '../type
 const MAP_WIDTH = GENERATED_GROCERY_STORE_MAP.width;
 const MAP_HEIGHT = GENERATED_GROCERY_STORE_MAP.height;
 const SHELF_TEXTURE = 'prototype-shelf';
+/** On-map footprint of an item marker, in world pixels. */
+const LOOT_MARKER_SIZE = 40;
+
+/** Texture key for one catalog item's art. */
+function lootTextureKey(catalogId: string): string {
+  return `loot-art-${catalogId}`;
+}
 
 export class GroceryStoreScene extends Phaser.Scene {
   private readonly callbacks: GroceryGameCallbacks;
@@ -97,6 +106,18 @@ export class GroceryStoreScene extends Phaser.Scene {
     this.callbacks = callbacks;
     this.phase = callbacks.initialPhase ?? 'COUNTDOWN';
     this.bindings = callbacks.getBindings?.() ?? DEFAULT_INPUT_BINDINGS;
+  }
+
+  /**
+   * Item art is optional by design: an entry with no file in the catalog, or a
+   * file that fails to download, simply falls through to the `?` placeholder in
+   * {@link createLootObject}. A missing PNG never blocks a match from starting.
+   */
+  preload(): void {
+    for (const entry of LOOT_CATALOG) {
+      const url = lootImageUrl(entry);
+      if (url) this.load.image(lootTextureKey(entry.id), url);
+    }
   }
 
   create(): void {
@@ -476,11 +497,25 @@ export class GroceryStoreScene extends Phaser.Scene {
 
   private createLootObject(id: string, catalogId: string, x: number, y: number): Phaser.GameObjects.Container {
     const catalog = lootCatalogEntry(catalogId);
-    const marker = this.add.circle(0, 0, 15, catalog.color).setStrokeStyle(3, 0x213a37);
-    const tag = this.add.text(0, -28, catalog.shortLabel, {
-      color: '#213a37', fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold',
-    }).setOrigin(0.5);
-    return this.add.container(x, y, [marker, tag]).setName(id).setDepth(1_000 + y - 4);
+    const shadow = this.add.ellipse(0, LOOT_MARKER_SIZE / 2 - 2, LOOT_MARKER_SIZE * 0.72, 9, 0x0d1a1c, 0.42);
+    const parts: Phaser.GameObjects.GameObject[] = [shadow];
+    const textureKey = lootTextureKey(catalog.id);
+    if (this.textures.exists(textureKey)) {
+      parts.push(this.add.image(0, 0, textureKey).setDisplaySize(LOOT_MARKER_SIZE, LOOT_MARKER_SIZE));
+    } else {
+      // No art for this item yet: a tinted disc carrying a question mark stands
+      // in, so an unillustrated item is still visible and still identifiable.
+      parts.push(
+        this.add.circle(0, 0, 15, catalog.color).setStrokeStyle(3, 0x213a37),
+        this.add.text(0, 0, '?', {
+          color: '#213a37', fontFamily: 'monospace', fontSize: '17px', fontStyle: 'bold',
+        }).setOrigin(0.5),
+        this.add.text(0, -26, catalog.shortLabel, {
+          color: '#213a37', fontFamily: 'monospace', fontSize: '11px', fontStyle: 'bold',
+        }).setOrigin(0.5),
+      );
+    }
+    return this.add.container(x, y, parts).setName(id).setDepth(1_000 + y - 4);
   }
 
   /** Mirrors the server's radius and line-of-access checks so prompts stay honest. */
@@ -557,6 +592,7 @@ export class GroceryStoreScene extends Phaser.Scene {
         id: item.id,
         label: catalog.label,
         shortLabel: catalog.shortLabel,
+        imageUrl: lootImageUrl(catalog),
         color: `#${catalog.color.toString(16).padStart(6, '0')}`,
         pending: pendingIds.has(item.id),
       }];

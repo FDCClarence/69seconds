@@ -218,8 +218,8 @@ describe('authentication application', () => {
       callbacks.onReady?.();
       callbacks.onInventoryChange?.({
         carriedItems: [
-          { id: 'loot-water', label: 'Bottled Water', shortLabel: 'WTR', color: '#6fb7d8', pending: false },
-          { id: 'loot-map', label: 'Map', shortLabel: 'MAP', color: '#c2b280', pending: true },
+          { id: 'loot-water', label: 'Bottled Water', shortLabel: 'WTR', color: '#6fb7d8', imageUrl: '/item_images/bottled-water.png', pending: false },
+          { id: 'loot-map', label: 'Map', shortLabel: 'MAP', color: '#c2b280', imageUrl: null, pending: true },
         ],
         depositedCount: 2,
         synchronized: true,
@@ -234,6 +234,9 @@ describe('authentication application', () => {
     expect(await screen.findByLabelText('Bottled Water in carry slot 1')).toBeTruthy();
     expect(screen.getByLabelText('Map in carry slot 2, awaiting confirmation')).toBeTruthy();
     expect(screen.getByLabelText('2 items deposited')).toBeTruthy();
+    // Illustrated items show their art; an item with none falls back to a `?` chip.
+    expect(screen.getByTitle('Bottled Water').getAttribute('src')).toBe('/item_images/bottled-water.png');
+    expect(screen.getByTitle('Map').textContent).toBe('?');
     expect(screen.getByRole('status').textContent).toContain('Picked up Bottled Water');
   });
 

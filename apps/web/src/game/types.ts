@@ -6,6 +6,8 @@ export interface CarryHudItem {
   label: string;
   shortLabel: string;
   color: string;
+  /** Item art, or null when this item has none yet and renders a `?` chip. */
+  imageUrl: string | null;
   /** True while this slot is an unacknowledged prediction. */
   pending: boolean;
 }

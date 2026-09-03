@@ -52,12 +52,18 @@ export const LOOT_SPAWN_TABLE = {
 export interface LootCatalogEntry {
   id: string;
   label: string;
-  /** Three-character marker tag drawn on the map. */
+  /** Three-character marker tag, used where art is too small to read. */
   shortLabel: string;
-  /** Marker fill, as a Phaser hex literal. */
+  /** Marker fill, as a Phaser hex literal. Also tints the no-art placeholder. */
   color: number;
   category: LootCategory;
   rarity: LootRarity;
+  /**
+   * Filename under `apps/web/public/item_images/`, or `null` when no art exists
+   * yet — those items render as a coloured `?` placeholder until a file lands
+   * here. Drop the PNG in that folder and name it here to wire it up.
+   */
+  image: string | null;
 }
 
 /**
@@ -66,33 +72,41 @@ export interface LootCatalogEntry {
  */
 export const LOOT_CATALOG = [
   // Food
-  { id: 'canned-soup', label: 'Canned Soup', shortLabel: 'SUP', color: 0xd2703a, category: 'food', rarity: 'common' },
-  { id: 'bottled-water', label: 'Bottled Water', shortLabel: 'WTR', color: 0x6fb7d8, category: 'food', rarity: 'common' },
-  { id: 'camping-mealkit', label: 'Camping Mealkit', shortLabel: 'MRE', color: 0xc9a227, category: 'food', rarity: 'epic' },
+  { id: 'canned-soup', label: 'Canned Soup', shortLabel: 'SUP', color: 0xd2703a, category: 'food', rarity: 'common', image: 'canned-soup.png' },
+  { id: 'bottled-water', label: 'Bottled Water', shortLabel: 'WTR', color: 0x6fb7d8, category: 'food', rarity: 'common', image: 'bottled-water.png' },
+  { id: 'microwave-meal', label: 'Microwave Meal', shortLabel: 'MRE', color: 0xc9a227, category: 'food', rarity: 'epic', image: 'microwave-meal.png' },
 
   // Weapons
-  { id: 'pepper-spray', label: 'Pepper Spray', shortLabel: 'PEP', color: 0xe4572e, category: 'weapons', rarity: 'uncommon' },
-  { id: 'baseball-bat', label: 'Baseball Bat', shortLabel: 'BAT', color: 0xa9714b, category: 'weapons', rarity: 'uncommon' },
-  { id: 'combat-knife', label: 'Combat Knife', shortLabel: 'KNF', color: 0x9aa5ad, category: 'weapons', rarity: 'rare' },
-  { id: 'pistol', label: 'Pistol', shortLabel: 'PSL', color: 0x4a4e57, category: 'weapons', rarity: 'epic' },
+  { id: 'pepper-spray', label: 'Pepper Spray', shortLabel: 'PEP', color: 0xe4572e, category: 'weapons', rarity: 'uncommon', image: 'pepper-spray.png' },
+  { id: 'baseball-bat', label: 'Baseball Bat', shortLabel: 'BAT', color: 0xa9714b, category: 'weapons', rarity: 'uncommon', image: 'baseball-bat.png' },
+  { id: 'combat-knife', label: 'Combat Knife', shortLabel: 'KNF', color: 0x9aa5ad, category: 'weapons', rarity: 'rare', image: 'combat-knife.png' },
+  { id: 'pistol', label: 'Pistol', shortLabel: 'PSL', color: 0x4a4e57, category: 'weapons', rarity: 'epic', image: 'pistol.png' },
 
   // Medicine
-  { id: 'medicine', label: 'Medicine', shortLabel: 'MED', color: 0xe86a92, category: 'medicine', rarity: 'rare' },
-  { id: 'medkit', label: 'Medkit', shortLabel: 'KIT', color: 0xd93b3b, category: 'medicine', rarity: 'epic' },
+  { id: 'medicine', label: 'Medicine', shortLabel: 'MED', color: 0xe86a92, category: 'medicine', rarity: 'rare', image: 'medicine.png' },
+  { id: 'medkit', label: 'Medkit', shortLabel: 'KIT', color: 0xd93b3b, category: 'medicine', rarity: 'epic', image: 'medkit.png' },
 
   // Entertainment
-  { id: 'playing-cards', label: 'Playing Cards', shortLabel: 'CRD', color: 0xdcd6c8, category: 'entertainment', rarity: 'uncommon' },
-  { id: 'chess-board', label: 'Chess Board', shortLabel: 'CHS', color: 0x5b4636, category: 'entertainment', rarity: 'rare' },
+  { id: 'playing-cards', label: 'Playing Cards', shortLabel: 'CRD', color: 0xdcd6c8, category: 'entertainment', rarity: 'uncommon', image: 'playing-cards.png' },
+  { id: 'chess-board', label: 'Chess Board', shortLabel: 'CHS', color: 0x5b4636, category: 'entertainment', rarity: 'rare', image: 'chess-board.png' },
 
   // Misc
-  { id: 'map', label: 'Map', shortLabel: 'MAP', color: 0xc2b280, category: 'misc', rarity: 'uncommon' },
-  { id: 'radio', label: 'Radio', shortLabel: 'RAD', color: 0x7a8b99, category: 'misc', rarity: 'rare' },
-  { id: 'lock-and-key', label: 'Lock and Key', shortLabel: 'LCK', color: 0xb8a13a, category: 'misc', rarity: 'rare' },
-  { id: 'pistol-bullets', label: 'Pistol Bullets', shortLabel: 'AMO', color: 0x8c7853, category: 'misc', rarity: 'rare' },
-  { id: 'methamphetamine', label: 'Methamphetamine', shortLabel: 'MTH', color: 0xb6e3ee, category: 'misc', rarity: 'epic' },
+  { id: 'map', label: 'Map', shortLabel: 'MAP', color: 0xc2b280, category: 'misc', rarity: 'uncommon', image: null },
+  { id: 'radio', label: 'Radio', shortLabel: 'RAD', color: 0x7a8b99, category: 'misc', rarity: 'rare', image: null },
+  { id: 'lock-and-key', label: 'Lock and Key', shortLabel: 'LCK', color: 0xb8a13a, category: 'misc', rarity: 'rare', image: null },
+  { id: 'pistol-bullets', label: 'Pistol Bullets', shortLabel: 'AMO', color: 0x8c7853, category: 'misc', rarity: 'rare', image: null },
+  { id: 'methamphetamine', label: 'Methamphetamine', shortLabel: 'MTH', color: 0xb6e3ee, category: 'misc', rarity: 'epic', image: null },
 ] as const satisfies readonly LootCatalogEntry[];
 
 export type LootCatalogId = (typeof LOOT_CATALOG)[number]['id'];
+
+/** Where the web app serves item art from; see `apps/web/public/item_images/`. */
+export const LOOT_IMAGE_BASE_PATH = '/item_images/';
+
+/** Resolved art URL, or null when the item still needs a placeholder. */
+export function lootImageUrl(entry: LootCatalogEntry): string | null {
+  return entry.image === null ? null : `${LOOT_IMAGE_BASE_PATH}${entry.image}`;
+}
 
 /** Draw weight of a single catalog entry. Rarity is the only input today. */
 export function lootSpawnWeight(entry: LootCatalogEntry): number {

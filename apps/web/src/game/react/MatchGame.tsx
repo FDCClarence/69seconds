@@ -263,7 +263,9 @@ export function MatchGame({
             const item = inventory.carriedItems[index];
             const className = item ? `is-filled${item.pending ? ' is-pending' : ''}` : undefined;
             return <li key={index} className={className} aria-label={item ? `${item.label} in carry slot ${index + 1}${item.pending ? ', awaiting confirmation' : ''}` : `Empty carry slot ${index + 1}`}>
-              <span>{index + 1}</span>{item && <b style={{ backgroundColor: item.color }} title={item.label}>{item.shortLabel}</b>}
+              <span>{index + 1}</span>{item && (item.imageUrl
+                ? <img className="carry-art" src={item.imageUrl} alt="" title={item.label} />
+                : <b style={{ backgroundColor: item.color }} title={item.label}>?</b>)}
             </li>;
           })}
         </ol>
