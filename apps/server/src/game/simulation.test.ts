@@ -420,7 +420,10 @@ describe('atomic end-of-looting tally', () => {
     const ended = simulation.tick(deadline);
     expect(ended).toMatchObject({ phaseChanged: true, tallyCommitted: true });
     expect(playerIn(simulation, deadline, 'player-0').position).toEqual(before);
-    expect(simulation.snapshot(deadline)).toMatchObject({ phase: 'TALLY', phaseEndsAtMs: null });
+    expect(simulation.snapshot(deadline)).toMatchObject({
+      phase: 'SURVIVAL',
+      phaseEndsAtMs: deadline + GAME.survivalDurationMs,
+    });
     const result = simulation.tally();
     expect(result).toMatchObject({
       resultId: `ABC234:${deadline}`,
@@ -450,11 +453,84 @@ describe('atomic end-of-looting tally', () => {
     const deadline = 2_000 + GAME.lootingDurationMs;
     const delayed = simulation.tick(deadline + 5_000);
     expect(delayed).toMatchObject({ phaseChanged: true, tallyCommitted: true });
-    expect(simulation.snapshot(deadline + 5_000).phase).toBe('TALLY');
+    expect(simulation.snapshot(deadline + 5_000).phase).toBe('SURVIVAL');
     expect(simulation.tally()).toMatchObject({
       lootingStartedAtMs: 2_000,
       lootingEndedAtMs: deadline,
       totalItems: 0,
     });
+  });
+});
+
+describe('AuthoritativeRoomSimulation survival phase', () => {
+  const lootingDeadline = 2_000 + GAME.lootingDurationMs;
+
+  /** Runs the countdown and the looting window out, leaving the day just opened. */
+  function survivingSimulation(): { base: RoomPublicState; simulation: AuthoritativeRoomSimulation } {
+    const base = room(2);
+    const simulation = new AuthoritativeRoomSimulation(base);
+    simulation.tick(2_000);
+    simulation.tick(lootingDeadline);
+    return { base, simulation };
+  }
+
+  it('enters SURVIVAL at the looting deadline with a 120-second server-owned window', () => {
+    const { simulation } = survivingSimulation();
+    const snapshot = simulation.snapshot(lootingDeadline);
+    expect(snapshot.phase).toBe('SURVIVAL');
+    expect(snapshot.phaseEndsAtMs).toBe(lootingDeadline + 120_000);
+    expect(snapshot.phaseEndsAtMs).toBe(lootingDeadline + GAME.survivalDurationMs);
+    expect(simulation.survivalWindow()).toEqual({
+      startedAtMs: lootingDeadline,
+      endsAtMs: lootingDeadline + GAME.survivalDurationMs,
+    });
+  });
+
+  it('measures the day from the authoritative looting deadline, not from a late tick', () => {
+    const simulation = new AuthoritativeRoomSimulation(room(2));
+    simulation.tick(2_000);
+    simulation.tick(lootingDeadline + 5_000);
+    // A delayed timer callback shortens the day rather than extending it, exactly
+    // as a delayed countdown boundary shortens looting.
+    expect(simulation.snapshot(lootingDeadline + 5_000).phaseEndsAtMs)
+      .toBe(lootingDeadline + GAME.survivalDurationMs);
+  });
+
+  it('does not advance out of SURVIVAL on its own, before or after the deadline', () => {
+    const { simulation } = survivingSimulation();
+    const survivalDeadline = lootingDeadline + GAME.survivalDurationMs;
+    for (const at of [lootingDeadline + 1, survivalDeadline - 1, survivalDeadline, survivalDeadline + 60_000]) {
+      const result = simulation.tick(at);
+      expect(result).toMatchObject({ phaseChanged: false, tallyCommitted: false, snapshotDue: false });
+      expect(simulation.snapshot(at)).toMatchObject({ phase: 'SURVIVAL', phaseEndsAtMs: survivalDeadline });
+    }
+  });
+
+  it('keeps the frozen looting result the survival day is played from', () => {
+    const { base, simulation } = survivingSimulation();
+    const result = simulation.tally();
+    expect(result).toMatchObject({
+      resultId: `ABC234:${lootingDeadline}`,
+      lootingEndedAtMs: lootingDeadline,
+      durationMs: GAME.lootingDurationMs,
+    });
+    // Player identities and match membership survive with it, which is what the
+    // end-of-day rule will iterate over.
+    expect(result?.players.map((player) => player.playerId)).toEqual(base.players.map((player) => player.id));
+    expect(Object.isFrozen(result)).toBe(true);
+    simulation.tick(lootingDeadline + GAME.survivalDurationMs);
+    expect(simulation.tally()).toBe(result);
+  });
+
+  it('refuses looting intent during the survival day', () => {
+    const { simulation } = survivingSimulation();
+    const at = lootingDeadline + 1_000;
+    expect(simulation.submitInput('player-0', input(200), at)).toBe(false);
+    expect(simulation.resolveInteraction('player-0', {
+      requestId: '00000000-0000-4000-8000-000000000401',
+      action: 'INTERACT',
+    }, at).result).toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
+    expect(simulation.resolveShove('player-0', shove('player-1'), at).result)
+      .toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
   });
 });

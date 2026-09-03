@@ -11,7 +11,7 @@ async function register(page: Page, index: number): Promise<void> {
   await expect(page.getByRole('button', { name: 'Create room' })).toBeVisible();
 }
 
-test('four isolated players complete auth, room start, reconnection, and the 69-second tally', async ({ browser }) => {
+test('four isolated players complete auth, room start, reconnection, and the 69-second looting round', async ({ browser }) => {
   const contexts: BrowserContext[] = [];
   const pages: Page[] = [];
   try {
@@ -64,10 +64,12 @@ test('four isolated players complete auth, room start, reconnection, and the 69-
     expect(await narrowPage.evaluate(() => document.documentElement.scrollWidth))
       .toBeLessThanOrEqual(320);
 
-    // The production duration is intentionally not shortened by the fixture.
+    // The production duration is intentionally not shortened by the fixture. At
+    // the authoritative looting deadline every client leaves the store scene for
+    // the server-owned survival day.
     for (const page of pages) {
-      await expect(page.getByRole('heading', { name: /Time.s up/i })).toBeVisible({ timeout: 75_000 });
-      await expect(page.getByText('final server tally')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Survival phase' })).toBeVisible({ timeout: 75_000 });
+      await expect(page.getByRole('application', { name: /grocery store/i })).toBeHidden();
     }
     expect(await narrowPage.evaluate(() => document.documentElement.scrollWidth))
       .toBeLessThanOrEqual(320);

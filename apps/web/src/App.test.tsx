@@ -464,6 +464,39 @@ describe('authentication application', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  it('recognizes SURVIVAL, leaves the looting scene, and renders the placeholder day', async () => {
+    let listeners: RoomClientListeners | undefined;
+    const destroy = vi.fn();
+    const started: RoomPublicState = { ...lobby, phase: 'LOOTING', phaseEndsAtMs: 70_000 };
+    const survivalRoom: RoomPublicState = {
+      ...started,
+      phase: 'SURVIVAL',
+      // The client only reads this deadline; it never sets one of its own.
+      phaseEndsAtMs: 70_000 + GAME.survivalDurationMs,
+    };
+    const rooms = roomClientStub({
+      subscribe: vi.fn((next) => {
+        listeners = next;
+        next.onConnection('CONNECTED');
+        return () => undefined;
+      }),
+      joinRoom: vi.fn().mockResolvedValue(started),
+    });
+    const gameFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.append(document.createElement('canvas'));
+      callbacks.onReady?.();
+      return { destroy };
+    };
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms, gameFactory);
+    await screen.findByRole('application', { name: /grocery store/i });
+
+    act(() => listeners?.onRoom(survivalRoom));
+    expect(await screen.findByRole('heading', { name: 'Survival phase' })).toBeTruthy();
+    expect(screen.queryByRole('application')).toBeNull();
+    expect(destroy).toHaveBeenCalledWith(true);
+    expect(screen.queryByRole('heading', { name: 'Time’s up.' })).toBeNull();
+  });
+
   it('destroys Phaser at TALLY, waits for the server result, and renders the immutable tally', async () => {
     let listeners: RoomClientListeners | undefined;
     const destroy = vi.fn();

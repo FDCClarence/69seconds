@@ -340,8 +340,13 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       void Promise.resolve(socket.join(recovered.code))
         .then(() => {
           io.to(recovered.code).emit('lobby:state', recovered);
-          if (recovered.phase === 'TALLY') sendTallyTo(socket, recovered.code);
-          else sendLootSyncTo(socket, recovered.code, playerId);
+          // The frozen looting result is what a survival-phase client needs, and
+          // the loot floor no longer exists once the day starts.
+          if (recovered.phase === 'SURVIVAL' || recovered.phase === 'TALLY') {
+            sendTallyTo(socket, recovered.code);
+          } else {
+            sendLootSyncTo(socket, recovered.code, playerId);
+          }
         })
         .catch((error: unknown) => console.error(error));
     }

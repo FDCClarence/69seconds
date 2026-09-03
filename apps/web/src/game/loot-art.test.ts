@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { LOOT_CATALOG, LOOT_IMAGE_BASE_PATH, lootImageUrl } from '@69-seconds/shared';
+import { LOOT_CATALOG, LOOT_IMAGE_BASE_PATH, lootImageUrl, type LootCatalogEntry } from '@69-seconds/shared';
 
 // Vitest runs from the web workspace root, which is where `public/` is served from.
 const publicDir = resolve(process.cwd(), 'public');
@@ -44,8 +44,12 @@ describe('item art', () => {
     expect(total).toBeLessThan(512 * 1024);
   });
 
-  it('leaves the unillustrated items explicitly null rather than pointing at nothing', () => {
-    const missing = LOOT_CATALOG.filter((entry) => entry.image === null).map((entry) => entry.id);
-    expect(missing).toEqual(['map', 'radio', 'lock-and-key', 'pistol-bullets', 'methamphetamine']);
+  it('illustrates every catalog entry, so nothing renders as a bare placeholder', () => {
+    // Widened, because the literal catalog type proves `image` is never null
+    // today; the annotation keeps the assertion meaningful when an entry is
+    // added without art.
+    const catalog: readonly LootCatalogEntry[] = LOOT_CATALOG;
+    const missing = catalog.filter((entry) => entry.image === null).map((entry) => entry.id);
+    expect(missing).toEqual([]);
   });
 });

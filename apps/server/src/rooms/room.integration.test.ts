@@ -319,7 +319,7 @@ describe('authenticated Socket.IO room lifecycle', () => {
     expect(sockets.rooms.size).toBe(0);
   });
 
-  it('broadcasts one exact tally, rejects delayed gameplay, and replays the result on reconnect', async () => {
+  it('opens a 120-second survival day, rejects delayed gameplay, and replays the looting result on reconnect', async () => {
     const host = await connect(0);
     const created = await command(host, 'room:create', {});
     if (!created.ok || !created.room) throw new Error('Expected room creation success');
@@ -334,10 +334,14 @@ describe('authenticated Socket.IO room lifecycle', () => {
 
     let tallyEvents = 0;
     host.on('match:tally', () => { tallyEvents += 1; });
-    const tallyState = nextLobbyState(host, (room) => room.phase === 'TALLY');
+    const survivalState = nextLobbyState(host, (room) => room.phase === 'SURVIVAL');
     const firstTally = new Promise<MatchTally>((resolve) => host.once('match:tally', resolve));
     serverNowMs = deadline;
-    expect(await tallyState).toMatchObject({ phase: 'TALLY', phaseEndsAtMs: null });
+    // The day's deadline is server-owned and derived from the looting deadline.
+    expect(await survivalState).toMatchObject({
+      phase: 'SURVIVAL',
+      phaseEndsAtMs: deadline + GAME.survivalDurationMs,
+    });
     const result = await firstTally;
     expect(result).toMatchObject({
       roomCode: created.room.code,

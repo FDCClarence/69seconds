@@ -11,9 +11,9 @@ This document defines the implemented first playable. Authentication, the privat
 1. **LOBBY** — Players join a private room, see membership/readiness, and wait for the host. Only the server may accept a start request and transition the room.
 2. **COUNTDOWN** — The roster is fixed for the round, gameplay input cannot move or interact, and the server announces an absolute phase end time. The initial target is three seconds.
 3. **LOOTING** — The server enables gameplay and sets `phaseEndsAtMs` to the scheduled countdown boundary plus exactly 69,000 ms. Players move, sprint, pick up/deposit loot, and shove subject to server validation.
-4. **TALLY** — At the server deadline, movement, pickups, deposits, and shoves stop. The authoritative deposited items are tallied and displayed to every player.
+4. **SURVIVAL** — At the looting deadline, movement, pickups, deposits, and shoves stop, the authoritative deposited items and recruits are frozen into one immutable looting result, and the server opens the survival day with `phaseEndsAtMs` set to that same deadline plus exactly 120,000 ms. The day is played from the frozen looting result; each player will be able to end their day manually, and the server ends it for anyone who has not once the deadline elapses.
 
-Phase transitions are one-way for a match: `LOBBY → COUNTDOWN → LOOTING → TALLY`. A rematch lifecycle is out of scope until explicitly specified.
+Phase transitions are one-way for a match: `LOBBY → COUNTDOWN → LOOTING → SURVIVAL`. The final-result phase that follows survival, and a rematch lifecycle, are out of scope until explicitly specified. `TALLY` remains a valid wire phase because the frozen looting result it describes is still committed and replayed.
 
 ## Players, rooms, and spawning
 
@@ -35,7 +35,7 @@ Phase transitions are one-way for a match: `LOBBY → COUNTDOWN → LOOTING → 
 - `Space`: context interaction, including pickup or deposit where valid.
 - `Ctrl`: request a shove against a valid nearby player, resolved as described below.
 - `Q`: put the most recently picked-up carryable back on the floor.
-- Movement and action input has no gameplay effect outside `LOOTING`.
+- Movement and action input has no gameplay effect outside `LOOTING`, `SURVIVAL` included.
 - The server validates speed, collision, timing, proximity, target availability, inventory capacity, cart ownership, and shove constraints. Clients may predict presentation but cannot decide outcomes.
 
 Initial tunable values live in `packages/shared`: walk speed 150 px/s and sprint speed 235 px/s. They are placeholders until movement tuning.
@@ -196,17 +196,17 @@ Each person's art is a large hand-authored canvas with the figure inside a wide 
 - The looting window is exactly 69,000 ms measured against the server's monotonic match timeline.
 - Clients render time remaining from server timestamps and snapshots; a client clock never ends or extends the phase.
 - Once the deadline is reached, the server transitions before accepting further gameplay effects.
-- TALLY reflects deposited loot only. Carried but undeposited items do not count unless a later product decision explicitly changes this rule.
+- The looting result reflects deposited loot only. Carried but undeposited items do not count unless a later product decision explicitly changes this rule.
 - The first tick at or beyond the deadline freezes one immutable match result from the cart authority. It contains per-player item lists, per-player category totals, match category totals, and stable server timestamps.
-- The server broadcasts that result once as `match:tally`; a rostered player reconnecting during the 15-second grace window receives the same committed result verbatim.
+- The server broadcasts that result once as `match:tally`; a rostered player reconnecting during the 15-second grace window receives the same committed result verbatim, in `SURVIVAL` as well as after it.
 - A player disconnected at the buzzer remains represented in the result. Later roster removal or host migration cannot rewrite it.
-- Every connected player sees the same final authoritative result, and may safely leave the completed room for home. Rematch/restart controls do not exist in `TALLY`.
+- Every connected player sees the same authoritative looting result. Rematch/restart controls do not exist.
 
 ## Acceptance criteria for the first playable
 
 - One to four authenticated browser sessions can create/join the same private room; a fifth is rejected.
 - Only the current host can begin a valid match, under the documented readiness rule.
-- All clients observe the same ordered lifecycle: LOBBY, COUNTDOWN, LOOTING, TALLY.
+- All clients observe the same ordered lifecycle: LOBBY, COUNTDOWN, LOOTING, SURVIVAL.
 - Players spawn near the map center and move smoothly with WASD; diagonal movement is normalized and collisions prevent crossing shelves/bounds.
 - Sprint changes speed only while the server-owned stamina bar permits it.
 - Stamina starts full, drains only while sprinting, refills only while not sprinting, and never leaves 0..capacity.
@@ -222,8 +222,8 @@ Each person's art is a large hand-authored canvas with the figure inside a wide 
 - Two players shoving each other at the same moment produce exactly one landed shove, decided by arrival order.
 - A modified client cannot supply its own facing, shove further than the configured range, shove faster than the cooldown, or shove while recovering.
 - The server ends looting after 69 seconds even if clients pause, lag, alter their clocks, or send late requests.
-- Inputs and interactions have no effect after TALLY begins.
-- All clients display a tally consistent with authoritative deposited items.
+- Inputs and interactions have no effect after the looting deadline, `SURVIVAL` included.
+- The survival day begins on every client at the authoritative looting deadline, with the server-owned 120-second deadline, and no client may end or extend it.
 - Refresh/reconnect within the supported grace window does not duplicate a player or reset authoritative match state.
 - Malformed, unauthorized, impossible, and excessive network messages are rejected with stable typed errors and do not crash the process.
 - Critical pure rules, room lifecycle, authority checks, network validation, and browser flow have automated coverage at their appropriate layers.
@@ -238,4 +238,4 @@ Each person's art is a large hand-authored canvas with the figure inside a wide 
 
 ## Current implementation boundary
 
-The 30 Hz server simulation owns movement, stamina, collision, spawn assignment, the complete phase graph, loot/cart state, shove effects, and the immutable final tally. Clients predict local movement and presentation only, reconcile from validated server messages, destroy Phaser on `TALLY`, and render the committed result in React. Durable match history, future scoring/resource conversion, and Tiled JSON remain out of scope. MySQL/Drizzle stores accounts and sessions, while rooms and completed match results remain intentionally process-local. Playwright covers the four-context vertical-slice journey and minimum-width critical layouts.
+The 30 Hz server simulation owns movement, stamina, collision, spawn assignment, the complete phase graph, loot/cart state, shove effects, the immutable looting result, and the survival day's deadline. Clients predict local movement and presentation only, reconcile from validated server messages, destroy Phaser when the looting phase ends, and render server-committed state in React. Durable match history, future scoring/resource conversion, and Tiled JSON remain out of scope. MySQL/Drizzle stores accounts and sessions, while rooms and completed match results remain intentionally process-local. Playwright covers the four-context vertical-slice journey and minimum-width critical layouts.

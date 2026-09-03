@@ -517,6 +517,12 @@ function Lobby({ code, room, matchTally, user, connection, networkError, onDismi
   }
 
   const self = room.players.find((player) => player.id === user.id);
+  if (room.phase === 'SURVIVAL') {
+    // Placeholder on purpose: this proves the authoritative transition off the
+    // looting scene. The survival screen — house readiness, the frozen looting
+    // result, and the End the day button — is the next task.
+    return <SurvivalScreen />;
+  }
   if (room.phase === 'TALLY') {
     return <TallyScreen room={room} result={matchTally} user={user} onLeave={onLeave} onLogout={onLogout} />;
   }
@@ -585,6 +591,14 @@ function Lobby({ code, room, matchTally, user, connection, networkError, onDismi
         </button>}
         <button className="link leave" type="button" disabled={busy} onClick={() => void act(onLeave)}>Leave room</button>
       </div>
+    </div>
+  </main>;
+}
+
+function SurvivalScreen() {
+  return <main className="page" aria-live="polite">
+    <div className="center">
+      <h1>Survival phase</h1>
     </div>
   </main>;
 }

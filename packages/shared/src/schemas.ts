@@ -2,7 +2,13 @@ import { z } from 'zod';
 import { GAME, SPRINT } from './constants.js';
 import { CARRYABLE_CATEGORIES } from './carryable.js';
 
-export const gamePhaseSchema = z.enum(['LOBBY', 'COUNTDOWN', 'LOOTING', 'TALLY']);
+/**
+ * Ordered lifecycle. A match runs `LOBBY → COUNTDOWN → LOOTING → SURVIVAL`;
+ * `TALLY` remains a valid wire value because the frozen looting result it
+ * describes is still committed and replayed, and the final-result phase that
+ * follows survival is not designed yet.
+ */
+export const gamePhaseSchema = z.enum(['LOBBY', 'COUNTDOWN', 'LOOTING', 'SURVIVAL', 'TALLY']);
 export const playerConnectionStateSchema = z.enum(['CONNECTED', 'RECONNECTING']);
 export const roomCodeSchema = z.string()
   .trim()

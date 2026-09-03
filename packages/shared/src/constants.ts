@@ -2,6 +2,12 @@ export const GAME = {
   maxPlayers: 4,
   maxCarriedItems: 4,
   lootingDurationMs: 69_000,
+  /**
+   * Maximum length of the survival day that follows looting. It is a ceiling
+   * rather than a fixed span: the server ends the day early once every player
+   * has ended theirs, and ends it for anyone who has not when this elapses.
+   */
+  survivalDurationMs: 120_000,
   countdownDurationMs: 3_000,
   roomCodeLength: 6,
   reconnectGraceMs: 15_000,

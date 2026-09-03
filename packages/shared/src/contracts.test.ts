@@ -10,6 +10,7 @@ import {
   interactionRequestSchema,
   interactionResultSchema,
   lootUpdateSchema,
+  gamePhaseSchema,
   normalizeMovementVector,
   roomCodeSchema,
   roomCommandResultSchema,
@@ -30,6 +31,31 @@ describe('shared contracts', () => {
       }],
     });
     expect(snapshot.phase).toBe('LOBBY');
+  });
+
+  it('carries the survival phase and its one authoritative duration', () => {
+    expect(gamePhaseSchema.parse('SURVIVAL')).toBe('SURVIVAL');
+    expect(gamePhaseSchema.options).toContain('SURVIVAL');
+    expect(() => gamePhaseSchema.parse('SURVIVE')).toThrow();
+    // The survival day's length lives here alone, so the client countdown and the
+    // server deadline can never disagree about it.
+    expect(GAME.survivalDurationMs).toBe(120_000);
+  });
+
+  it('accepts a survival snapshot carrying the server-owned day deadline', () => {
+    const snapshot = gameSnapshotSchema.parse({
+      sequence: 2,
+      roomCode: 'ABC234',
+      phase: 'SURVIVAL',
+      serverTimeMs: 70_000,
+      phaseEndsAtMs: 70_000 + GAME.survivalDurationMs,
+      players: [{
+        id: 'player-1', position: { x: 900, y: 600 }, sprinting: false,
+        stamina: 100, exhausted: false, recoveringUntilMs: null,
+        acknowledgedInputSequence: 4,
+      }],
+    });
+    expect(snapshot).toMatchObject({ phase: 'SURVIVAL', phaseEndsAtMs: 190_000 });
   });
 
   it('normalizes readable room codes and validates typed command results', () => {

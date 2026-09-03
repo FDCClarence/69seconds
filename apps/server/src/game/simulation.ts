@@ -77,6 +77,8 @@ export class AuthoritativeRoomSimulation {
   private phase: GamePhase;
   private phaseEndsAtMs: number | null;
   private lootingStartedAtMs: number | null = null;
+  /** Server clock time the survival day opened; null until looting ends. */
+  private survivalStartedAtMs: number | null = null;
   private committedTally: MatchTally | null = null;
   private snapshotSequence = 0;
   private snapshotAccumulatorSeconds = 0;
@@ -120,7 +122,9 @@ export class AuthoritativeRoomSimulation {
     if (!player || input.sequence <= player.lastReceivedSequence) return false;
     // Countdown input may be staged, but nothing at or beyond the looting deadline
     // is accepted into the queue even if the fixed-step timer has not fired yet.
-    if (this.phase === 'TALLY') return false;
+    // Looting movement is over for good once the day begins, so survival rejects
+    // input for the same reason a completed match does.
+    if (this.phase === 'SURVIVAL' || this.phase === 'TALLY') return false;
     if (
       serverNowMs !== undefined
       && this.phase === 'LOOTING'
@@ -233,6 +237,17 @@ export class AuthoritativeRoomSimulation {
     return this.committedTally;
   }
 
+  /**
+   * The server-owned survival window, exposed for the end-of-day rule that will
+   * read it. Null outside `SURVIVAL`; a client never supplies either value.
+   */
+  survivalWindow(): { startedAtMs: number; endsAtMs: number } | null {
+    if (this.phase !== 'SURVIVAL' || this.survivalStartedAtMs === null || this.phaseEndsAtMs === null) {
+      return null;
+    }
+    return { startedAtMs: this.survivalStartedAtMs, endsAtMs: this.phaseEndsAtMs };
+  }
+
   tick(serverNowMs: number): SimulationTickResult {
     let phaseChanged = false;
     let tallyCommitted = false;
@@ -249,12 +264,23 @@ export class AuthoritativeRoomSimulation {
     // a late interaction window or emitting an intermediate stale phase.
     if (this.phase === 'LOOTING' && this.phaseEndsAtMs !== null && serverNowMs >= this.phaseEndsAtMs) {
       const lootingEndedAtMs = this.phaseEndsAtMs;
-      this.phase = 'TALLY';
-      this.phaseEndsAtMs = null;
+      this.phase = 'SURVIVAL';
+      // The looting result is frozen at the buzzer exactly as before, because the
+      // survival day is played from it: deposited items, recruited people, and
+      // who was in the match all live in that one immutable object.
       this.committedTally = this.createTally(lootingEndedAtMs);
+      this.survivalStartedAtMs = lootingEndedAtMs;
+      // Derived from the authoritative looting deadline rather than from
+      // `serverNowMs`, so a late timer callback shortens the day instead of
+      // extending it — the same rule the looting deadline follows.
+      this.phaseEndsAtMs = lootingEndedAtMs + GAME.survivalDurationMs;
       phaseChanged = true;
       tallyCommitted = true;
     }
+
+    // Survival deliberately has no exit transition yet. Reaching the deadline is
+    // what will auto-end the day for anyone who has not ended it themselves, and
+    // that belongs with the end-of-day flow rather than with this scaffold.
 
     const movementAllowed = this.phase === 'LOOTING'
       && (this.phaseEndsAtMs === null || serverNowMs < this.phaseEndsAtMs);
@@ -307,8 +333,10 @@ export class AuthoritativeRoomSimulation {
     this.snapshotAccumulatorSeconds += FIXED_DELTA_SECONDS;
     const snapshotInterval = 1 / NETWORK.snapshotRateHz;
     // One final snapshot is emitted because `phaseChanged` is true. Afterwards a
-    // completed room is event-driven and does not keep broadcasting 20 Hz state.
-    const snapshotDue = this.phase !== 'TALLY'
+    // room past looting is event-driven: nothing moves in survival, so the single
+    // phase/deadline pair a client needs for its countdown arrives once instead of
+    // being re-sent 20 times a second.
+    const snapshotDue = this.phase !== 'SURVIVAL' && this.phase !== 'TALLY'
       && this.snapshotAccumulatorSeconds + Number.EPSILON >= snapshotInterval;
     if (snapshotDue) this.snapshotAccumulatorSeconds -= snapshotInterval;
     return { phaseChanged, tallyCommitted, snapshotDue };
