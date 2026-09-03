@@ -302,11 +302,13 @@ describe('authentication application', () => {
 
   it('keeps gameplay keys scoped, prevents browser actions, and exposes rebindable controls', async () => {
     const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
+    const nativeGameKeyDown = vi.fn();
     const synchronizedFactory: GroceryGameFactory = (parent, callbacks) => {
+      parent.addEventListener('keydown', nativeGameKeyDown);
       parent.append(document.createElement('canvas'));
       callbacks.onReady?.();
       callbacks.onInventoryChange?.({ carriedItems: [], depositedCount: 0, synchronized: true });
-      return { destroy: () => undefined };
+      return { destroy: () => parent.removeEventListener('keydown', nativeGameKeyDown) };
     };
     renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
       joinRoom: vi.fn().mockResolvedValue(startedLobby),
@@ -314,10 +316,15 @@ describe('authentication application', () => {
 
     const game = await screen.findByRole('application', { name: /grocery store/i });
     game.focus();
+    const move = new KeyboardEvent('keydown', { code: 'KeyW', key: 'w', bubbles: true, cancelable: true });
     const space = new KeyboardEvent('keydown', { code: 'Space', key: ' ', bubbles: true, cancelable: true });
     const control = new KeyboardEvent('keydown', { code: 'ControlLeft', key: 'Control', bubbles: true, cancelable: true });
+    expect(game.dispatchEvent(move)).toBe(false);
     expect(game.dispatchEvent(space)).toBe(false);
     expect(game.dispatchEvent(control)).toBe(false);
+    expect(nativeGameKeyDown.mock.calls.map((call) => (call[0] as KeyboardEvent).code)).toEqual([
+      'KeyW', 'Space', 'ControlLeft',
+    ]);
 
     await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     expect(screen.getByRole('complementary', { name: 'Game settings' })).toBeTruthy();

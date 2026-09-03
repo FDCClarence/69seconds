@@ -189,7 +189,6 @@ export function MatchGame({
   function captureGameplayKey(event: ReactKeyboardEvent<HTMLDivElement>): void {
     if (Object.values(bindings).includes(event.code)) {
       event.preventDefault();
-      event.stopPropagation();
     }
   }
 
