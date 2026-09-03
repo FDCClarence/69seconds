@@ -96,8 +96,14 @@ The room handlers return typed acknowledgement unions while broadcasting runtime
 - Starting stats and per-NPC overrides are data in `packages/shared/src/survival-table.ts`. The engine never hard-codes a value, so giving one person 120 max health is a table edit, not a change to initialization. The override table is injectable, which is how the test suite proves override support without moving live balance.
 - A main character and a recruited NPC are one representation, so a later feeding, drain, or death rule iterates a single list. Stats are current/max pairs with a per-character `max`; `isAlive` is explicit rather than derived from health.
 - The result is parsed through the shared strict schema and deep-frozen, exactly as the looting result is. `survivalState()` returns that same object on every later tick.
-- `survival:state` is broadcast once, after `match:tally`, and replayed verbatim to a reconnecting member. It is server-to-client only: `ClientToServerEvents` has no survival event, so stats, maxes, daily costs, and alive state have no inbound path at all.
+- `survival:state` is broadcast once, after `match:tally`, and replayed verbatim to a reconnecting member. It is server-to-client only, so stats, maxes, daily costs, and alive state have no inbound path at all. The sole inbound survival event is the strict empty `survival:end-day` intent; authenticated socket identity supplies the household and the server supplies the day and deadline.
 - The day number rides on that same state. The simulation holds the current day beside the phase and the deadline and passes it into `initializeSurvivalState`, which records the number it is handed rather than counting days itself; the buzzer opens `SURVIVAL.firstDayNumber` because the grocery run precedes Day 1. Incrementing it is a server-side change in that one field, and no inbound event can reach it.
+
+## Survival End Day readiness
+
+- `SurvivalReadinessAuthority` tracks every household independently from the immutable character/inventory state. A manual End Day request locks only its authenticated owner; retries return the current state without another mutation or broadcast.
+- The server tick auto-ends every unfinished household at the exact 120-second deadline. Manual completion timestamps remain untouched, and no timeout event is expected from a client.
+- `survival:readiness` exposes each player's completion, the remaining active count, and `allPlayersEnded`. The latter changes synchronously when the final household ends, so day resolution can attach to it without waiting for the deadline. Resolution and day advancement are not implemented here.
 
 ## Authoritative sprint and shove
 

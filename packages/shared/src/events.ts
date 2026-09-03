@@ -19,6 +19,9 @@ import type {
   ShoveLanded,
   ShoveResult,
   SurvivalState,
+  SurvivalEndDayRequest,
+  SurvivalEndDayResult,
+  SurvivalReadinessState,
 } from './schemas.js';
 
 export const CLIENT_EVENTS = {
@@ -30,6 +33,7 @@ export const CLIENT_EVENTS = {
   INPUT: 'input:update',
   INTERACT: 'interaction:request',
   SHOVE: 'shove:request',
+  END_DAY: 'survival:end-day',
 } as const;
 
 export const SERVER_EVENTS = {
@@ -41,6 +45,7 @@ export const SERVER_EVENTS = {
   SHOVE_LANDED: 'shove:landed',
   MATCH_TALLY: 'match:tally',
   SURVIVAL_STATE: 'survival:state',
+  SURVIVAL_READINESS: 'survival:readiness',
   ERROR: 'game:error',
 } as const;
 
@@ -53,6 +58,10 @@ export interface ClientToServerEvents {
   'input:update': (input: ClientInput) => void;
   'interaction:request': (request: InteractionRequest, acknowledge: (result: InteractionResult) => void) => void;
   'shove:request': (request: ShoveRequest, acknowledge: (result: ShoveResult) => void) => void;
+  'survival:end-day': (
+    request: SurvivalEndDayRequest,
+    acknowledge: (result: SurvivalEndDayResult) => void,
+  ) => void;
 }
 
 export interface ServerToClientEvents {
@@ -74,6 +83,8 @@ export interface ServerToClientEvents {
    * alive state, so none of it can be submitted.
    */
   'survival:state': (state: SurvivalState) => void;
+  /** Latest mutable End Day state, broadcast only when a player's state changes. */
+  'survival:readiness': (state: SurvivalReadinessState) => void;
   'game:error': (error: ServerError) => void;
 }
 

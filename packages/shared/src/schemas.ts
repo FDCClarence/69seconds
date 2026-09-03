@@ -260,6 +260,62 @@ export const survivalStateSchema = z.strictObject({
   households: z.array(survivalHouseholdSchema).min(1).max(GAME.maxPlayers),
 });
 
+/**
+ * One household owner's server-owned End Day state. The two strict variants
+ * keep an unfinished player from carrying a fabricated completion time/reason.
+ */
+export const survivalPlayerReadinessSchema = z.discriminatedUnion('hasEnded', [
+  z.strictObject({
+    playerId: playerIdSchema,
+    hasEnded: z.literal(false),
+    endedAtMs: z.null(),
+    endedBy: z.null(),
+  }),
+  z.strictObject({
+    playerId: playerIdSchema,
+    hasEnded: z.literal(true),
+    endedAtMs: z.number().int().nonnegative(),
+    endedBy: z.enum(['MANUAL', 'TIMEOUT']),
+  }),
+]);
+
+/** Mutable readiness is separate from the immutable household/stat snapshot. */
+export const survivalReadinessStateSchema = z.strictObject({
+  roomCode: roomCodeSchema,
+  dayNumber: z.number().int().min(SURVIVAL.firstDayNumber),
+  startedAtMs: z.number().int().nonnegative(),
+  endsAtMs: z.number().int().nonnegative(),
+  durationMs: z.literal(GAME.survivalDurationMs),
+  players: z.array(survivalPlayerReadinessSchema).min(1).max(GAME.maxPlayers),
+  /** Households that may still make survival decisions this day. */
+  activePlayerCount: z.number().int().min(0).max(GAME.maxPlayers),
+  allPlayersEnded: z.boolean(),
+}).superRefine((state, context) => {
+  if (state.endsAtMs !== state.startedAtMs + state.durationMs) {
+    context.addIssue({ code: 'custom', message: 'Survival readiness must cover one authoritative day' });
+  }
+  const playerIds = new Set(state.players.map((player) => player.playerId));
+  if (playerIds.size !== state.players.length) {
+    context.addIssue({ code: 'custom', message: 'Survival readiness player ids must be unique' });
+  }
+  const activePlayerCount = state.players.filter((player) => !player.hasEnded).length;
+  if (state.activePlayerCount !== activePlayerCount) {
+    context.addIssue({ code: 'custom', message: 'Active player count must match readiness entries' });
+  }
+  if (state.allPlayersEnded !== (activePlayerCount === 0)) {
+    context.addIssue({ code: 'custom', message: 'All-players-ended must match readiness entries' });
+  }
+  for (const player of state.players) {
+    if (!player.hasEnded) continue;
+    if (player.endedAtMs < state.startedAtMs || player.endedAtMs > state.endsAtMs) {
+      context.addIssue({ code: 'custom', message: 'End Day time must fall within the authoritative day' });
+    }
+    if (player.endedBy === 'TIMEOUT' && player.endedAtMs !== state.endsAtMs) {
+      context.addIssue({ code: 'custom', message: 'Timeout completion must occur at the deadline' });
+    }
+  }
+});
+
 export const snapshotPlayerStateSchema = z.strictObject({
   id: z.string().min(1).max(128),
   position: vector2Schema,
@@ -430,6 +486,8 @@ export const roomJoinRequestSchema = z.strictObject({ code: roomCodeSchema });
 export const roomLeaveRequestSchema = z.strictObject({});
 export const lobbyReadyRequestSchema = z.strictObject({ ready: z.boolean() });
 export const lobbyStartRequestSchema = z.strictObject({});
+/** Identity, day, deadline, and result are all derived from the authenticated socket. */
+export const survivalEndDayRequestSchema = z.strictObject({});
 
 export const serverErrorCodeSchema = z.enum([
   'INVALID_PAYLOAD',
@@ -460,6 +518,11 @@ export const serverErrorSchema = z.object({
 export const roomCommandResultSchema = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), room: roomPublicStateSchema.nullable() }),
   z.object({ ok: z.literal(false), error: serverErrorSchema }),
+]);
+
+export const survivalEndDayResultSchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), readiness: survivalReadinessStateSchema }),
+  z.strictObject({ ok: z.literal(false), error: serverErrorSchema }),
 ]);
 
 export const roomClosedSchema = z.object({
@@ -530,6 +593,8 @@ export type SurvivalCharacter = z.infer<typeof survivalCharacterSchema>;
 export type SurvivalInventoryItem = z.infer<typeof survivalInventoryItemSchema>;
 export type SurvivalHousehold = z.infer<typeof survivalHouseholdSchema>;
 export type SurvivalState = z.infer<typeof survivalStateSchema>;
+export type SurvivalPlayerReadiness = z.infer<typeof survivalPlayerReadinessSchema>;
+export type SurvivalReadinessState = z.infer<typeof survivalReadinessStateSchema>;
 export type SnapshotPlayerState = z.infer<typeof snapshotPlayerStateSchema>;
 export type GameSnapshot = z.infer<typeof gameSnapshotSchema>;
 export type ClientInput = z.infer<typeof clientInputSchema>;
@@ -545,6 +610,8 @@ export type RoomJoinRequest = z.infer<typeof roomJoinRequestSchema>;
 export type RoomLeaveRequest = z.infer<typeof roomLeaveRequestSchema>;
 export type LobbyReadyRequest = z.infer<typeof lobbyReadyRequestSchema>;
 export type LobbyStartRequest = z.infer<typeof lobbyStartRequestSchema>;
+export type SurvivalEndDayRequest = z.infer<typeof survivalEndDayRequestSchema>;
+export type SurvivalEndDayResult = z.infer<typeof survivalEndDayResultSchema>;
 export type ServerErrorCode = z.infer<typeof serverErrorCodeSchema>;
 export type ServerError = z.infer<typeof serverErrorSchema>;
 export type RoomCommandResult = z.infer<typeof roomCommandResultSchema>;

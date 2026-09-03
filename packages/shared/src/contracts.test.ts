@@ -18,6 +18,8 @@ import {
   roomCodeSchema,
   roomCommandResultSchema,
   survivalStateSchema,
+  survivalEndDayRequestSchema,
+  survivalReadinessStateSchema,
 } from './index.js';
 
 describe('shared contracts', () => {
@@ -213,15 +215,40 @@ describe('shared contracts', () => {
     })).toThrow();
   });
 
-  it('carries the survival households one way only', () => {
+  it('carries survival state one way and exposes only an empty End Day intent', () => {
     // Server to client, and nowhere in the other direction: there is no client
     // event through which stats, maxes, daily costs, or alive state could be
     // submitted.
     expect(Object.values(SERVER_EVENTS)).toContain('survival:state');
     expect(Object.values(CLIENT_EVENTS)).not.toContain('survival:state');
-    for (const event of Object.values(CLIENT_EVENTS)) {
-      expect(event).not.toMatch(/survival/);
-    }
+    expect(Object.values(CLIENT_EVENTS).filter((event) => event.startsWith('survival:')))
+      .toEqual(['survival:end-day']);
+    expect(survivalEndDayRequestSchema.parse({})).toEqual({});
+    for (const forbidden of [
+      { playerId: 'player-2' },
+      { dayNumber: 2 },
+      { timerMs: 1 },
+      { result: 'ended' },
+    ]) expect(() => survivalEndDayRequestSchema.parse(forbidden)).toThrow();
+  });
+
+  it('validates internally consistent authoritative readiness', () => {
+    const state = {
+      roomCode: 'ABC234',
+      dayNumber: 1,
+      startedAtMs: 71_000,
+      endsAtMs: 71_000 + GAME.survivalDurationMs,
+      durationMs: GAME.survivalDurationMs,
+      players: [
+        { playerId: 'player-1', hasEnded: true, endedAtMs: 72_000, endedBy: 'MANUAL' },
+        { playerId: 'player-2', hasEnded: false, endedAtMs: null, endedBy: null },
+      ],
+      activePlayerCount: 1,
+      allPlayersEnded: false,
+    } as const;
+    expect(survivalReadinessStateSchema.parse(state)).toEqual(state);
+    expect(() => survivalReadinessStateSchema.parse({ ...state, allPlayersEnded: true })).toThrow();
+    expect(() => survivalReadinessStateSchema.parse({ ...state, activePlayerCount: 2 })).toThrow();
   });
 
   it('accepts a household whose recruit has their own maxes and daily costs', () => {

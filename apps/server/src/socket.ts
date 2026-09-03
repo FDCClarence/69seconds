@@ -11,6 +11,8 @@ import {
   serverErrorSchema,
   shoveRequestSchema,
   shoveResultSchema,
+  survivalEndDayRequestSchema,
+  survivalEndDayResultSchema,
   type ClientToServerEvents,
   type InteractionRejectionReason,
   type InteractionResult,
@@ -23,6 +25,7 @@ import {
   type ServerError,
   type ServerToClientEvents,
   type SocketData,
+  type SurvivalEndDayResult,
   NETWORK,
 } from '@69-seconds/shared';
 import type { Server as HttpServer } from 'node:http';
@@ -77,6 +80,13 @@ function commandFailure(error: unknown, event: string): RoomCommandResult {
   return roomCommandResultSchema.parse({
     ok: false,
     error: publicError('INTERNAL_ERROR', 'An unexpected room error occurred', event, true),
+  });
+}
+
+function endDayFailure(code: ServerError['code'], message: string): SurvivalEndDayResult {
+  return survivalEndDayResultSchema.parse({
+    ok: false,
+    error: publicError(code, message, 'survival:end-day'),
   });
 }
 
@@ -193,6 +203,11 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     if (state) socket.emit('survival:state', state);
   }
 
+  function sendSurvivalReadinessTo(socket: GameSocket, roomCode: string): void {
+    const state = simulations.get(roomCode)?.survivalReadiness();
+    if (state) socket.emit('survival:readiness', state);
+  }
+
   function broadcastLootUpdate(roomCode: string, update: LootUpdate | null): void {
     if (update) io.to(roomCode).emit('loot:update', update);
   }
@@ -201,7 +216,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     const serverNowMs = now();
     for (const simulation of simulations.values()) {
       const result = simulation.tick(serverNowMs);
-      if (!result.snapshotDue && !result.phaseChanged) continue;
+      if (!result.snapshotDue && !result.phaseChanged && !result.readinessChanged) continue;
       const snapshot = simulation.snapshot(serverNowMs);
       const room = rooms.applySimulationSnapshot(snapshot);
       if (!room) {
@@ -218,6 +233,11 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
         // After the looting result, because the households are derived from it.
         const survivalState = simulation.survivalState();
         if (survivalState) io.to(simulation.roomCode).emit('survival:state', survivalState);
+        const readiness = simulation.survivalReadiness();
+        if (readiness) io.to(simulation.roomCode).emit('survival:readiness', readiness);
+      } else if (result.readinessChanged) {
+        const readiness = simulation.survivalReadiness();
+        if (readiness) io.to(simulation.roomCode).emit('survival:readiness', readiness);
       }
     }
   }, 1_000 / NETWORK.simulationTickRateHz);
@@ -354,6 +374,7 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
           if (recovered.phase === 'SURVIVAL' || recovered.phase === 'TALLY') {
             sendTallyTo(socket, recovered.code);
             sendSurvivalStateTo(socket, recovered.code);
+            sendSurvivalReadinessTo(socket, recovered.code);
           } else {
             sendLootSyncTo(socket, recovered.code, playerId);
           }
@@ -498,6 +519,32 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       acknowledge?.(resolution.result);
       // A replayed request ID reports its original decision and shoves nobody twice.
       if (resolution.landed) io.to(code).emit('shove:landed', resolution.landed);
+    });
+
+    socket.on('survival:end-day', (payload, acknowledge) => {
+      if (!isValid(survivalEndDayRequestSchema, payload)) {
+        acknowledge?.(endDayFailure('INVALID_PAYLOAD', 'Invalid payload for survival:end-day'));
+        return;
+      }
+      const code = rooms.roomForPlayer(playerId);
+      const simulation = code ? simulations.get(code) : undefined;
+      if (!code || !simulation) {
+        acknowledge?.(endDayFailure(code ? 'INVALID_PHASE' : 'NOT_IN_ROOM', 'No active survival day'));
+        return;
+      }
+      const resolution = simulation.endSurvivalDay(playerId, now());
+      if (!resolution.accepted) {
+        acknowledge?.(endDayFailure(
+          resolution.reason === 'INVALID_PHASE' ? 'INVALID_PHASE' : 'FORBIDDEN',
+          resolution.reason === 'INVALID_PHASE'
+            ? 'End Day is only available during an active survival day'
+            : 'You do not own an active household in this survival day',
+        ));
+        return;
+      }
+      acknowledge?.(survivalEndDayResultSchema.parse({ ok: true, readiness: resolution.state }));
+      // An idempotent replay receives the current state but creates no duplicate broadcast.
+      if (resolution.changed) io.to(code).emit('survival:readiness', resolution.state);
     });
 
     socket.on('disconnect', () => {

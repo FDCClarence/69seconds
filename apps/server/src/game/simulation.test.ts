@@ -535,6 +535,57 @@ describe('AuthoritativeRoomSimulation survival phase', () => {
     expect(simulation.resolveShove('player-0', shove('player-1'), at).result)
       .toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
   });
+
+  it('owns per-player End Day readiness and exposes the future action lock', () => {
+    const { simulation } = survivingSimulation();
+    const at = lootingDeadline + 1_000;
+    expect(simulation.canPerformSurvivalDayActions('player-0', at)).toBe(true);
+    const ended = simulation.endSurvivalDay('player-0', at);
+    expect(ended).toMatchObject({
+      accepted: true,
+      changed: true,
+      state: { activePlayerCount: 1, allPlayersEnded: false },
+    });
+    expect(simulation.canPerformSurvivalDayActions('player-0', at + 1)).toBe(false);
+    expect(simulation.canPerformSurvivalDayActions('player-1', at + 1)).toBe(true);
+  });
+
+  it('rejects non-household identities and End Day outside SURVIVAL', () => {
+    const beforeDay = new AuthoritativeRoomSimulation(room(2));
+    expect(beforeDay.endSurvivalDay('player-0', 1_500))
+      .toEqual({ accepted: false, reason: 'INVALID_PHASE' });
+    const { simulation } = survivingSimulation();
+    expect(simulation.endSurvivalDay('another-player', lootingDeadline + 1))
+      .toEqual({ accepted: false, reason: 'NOT_ACTIVE_HOUSEHOLD' });
+    expect(simulation.survivalReadiness()?.activePlayerCount).toBe(2);
+  });
+
+  it('auto-ends remaining players at timeout and preserves manual completion', () => {
+    const { simulation } = survivingSimulation();
+    const manualAt = lootingDeadline + 500;
+    simulation.endSurvivalDay('player-0', manualAt);
+    const timeout = lootingDeadline + GAME.survivalDurationMs;
+    const tick = simulation.tick(timeout);
+    expect(tick.readinessChanged).toBe(true);
+    expect(simulation.survivalReadiness()?.players).toEqual([
+      { playerId: 'player-0', hasEnded: true, endedAtMs: manualAt, endedBy: 'MANUAL' },
+      { playerId: 'player-1', hasEnded: true, endedAtMs: timeout, endedBy: 'TIMEOUT' },
+    ]);
+    expect(simulation.allPlayersEnded()).toBe(true);
+    expect(simulation.tick(timeout + 1).readinessChanged).toBe(false);
+  });
+
+  it('sets all-players-ended as soon as the last household ends before timeout', () => {
+    const { simulation } = survivingSimulation();
+    simulation.endSurvivalDay('player-0', lootingDeadline + 1_000);
+    const last = simulation.endSurvivalDay('player-1', lootingDeadline + 2_000);
+    expect(last).toMatchObject({ accepted: true, changed: true, state: { allPlayersEnded: true } });
+    expect(simulation.allPlayersEnded()).toBe(true);
+    expect(lootingDeadline + 2_000).toBeLessThan(lootingDeadline + GAME.survivalDurationMs);
+    // Readiness is only a resolution trigger in this task; no next day is opened.
+    expect(simulation.snapshot(lootingDeadline + 2_000).phase).toBe('SURVIVAL');
+    expect(simulation.survivalDayNumber()).toBe(1);
+  });
 });
 
 describe('survival household initialization', () => {

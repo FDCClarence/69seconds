@@ -23,6 +23,7 @@ import {
   type ShoveRequest,
   type SprintState,
   type SurvivalState,
+  type SurvivalReadinessState,
   type Vector2,
 } from '@69-seconds/shared';
 import { MatchLootAuthority, type InteractionResolution, type LootAuthorityOptions } from './loot-authority.js';
@@ -31,6 +32,7 @@ import {
   type ShoveAuthorityOptions,
   type ShoveResolution,
 } from './shove-authority.js';
+import { SurvivalReadinessAuthority } from './survival-readiness.js';
 
 const IDLE_MOVEMENT = { up: false, down: false, left: false, right: false } as const;
 const FIXED_DELTA_SECONDS = 1 / NETWORK.simulationTickRateHz;
@@ -68,7 +70,12 @@ export interface SimulationTickResult {
   phaseChanged: boolean;
   tallyCommitted: boolean;
   snapshotDue: boolean;
+  readinessChanged: boolean;
 }
+
+export type EndSurvivalDayResolution =
+  | { accepted: true; changed: boolean; state: SurvivalReadinessState }
+  | { accepted: false; reason: 'INVALID_PHASE' | 'NOT_ACTIVE_HOUSEHOLD' };
 
 /** Deterministic room simulation. Wall time controls phases; movement always uses one fixed step. */
 export class AuthoritativeRoomSimulation {
@@ -96,6 +103,7 @@ export class AuthoritativeRoomSimulation {
   private committedTally: MatchTally | null = null;
   /** One household per player, produced at the buzzer; null until then. */
   private committedSurvivalState: SurvivalState | null = null;
+  private readiness: SurvivalReadinessAuthority | null = null;
   private snapshotSequence = 0;
   private snapshotAccumulatorSeconds = 0;
 
@@ -262,6 +270,31 @@ export class AuthoritativeRoomSimulation {
     return this.committedSurvivalState;
   }
 
+  survivalReadiness(): SurvivalReadinessState | null {
+    return this.readiness?.state() ?? null;
+  }
+
+  allPlayersEnded(): boolean {
+    return this.readiness?.allPlayersEnded() ?? false;
+  }
+
+  /** The single gate later feeding/item handlers must pass before mutating a day. */
+  canPerformSurvivalDayActions(playerId: string, serverNowMs: number): boolean {
+    return this.phase === 'SURVIVAL'
+      && (this.readiness?.canPerformDayActions(playerId, serverNowMs) ?? false);
+  }
+
+  endSurvivalDay(playerId: string, serverNowMs: number): EndSurvivalDayResolution {
+    if (this.phase !== 'SURVIVAL' || !this.readiness) {
+      return { accepted: false, reason: 'INVALID_PHASE' };
+    }
+    if (!this.readiness.hasPlayer(playerId)) {
+      return { accepted: false, reason: 'NOT_ACTIVE_HOUSEHOLD' };
+    }
+    const resolution = this.readiness.endManually(playerId, serverNowMs);
+    return { accepted: true, ...resolution };
+  }
+
   /**
    * The authoritative survival day. It reads `SURVIVAL.firstDayNumber` before
    * and during the first day; only the server ever moves it.
@@ -284,6 +317,7 @@ export class AuthoritativeRoomSimulation {
   tick(serverNowMs: number): SimulationTickResult {
     let phaseChanged = false;
     let tallyCommitted = false;
+    let readinessChanged = false;
     if (this.phase === 'COUNTDOWN' && this.phaseEndsAtMs !== null && serverNowMs >= this.phaseEndsAtMs) {
       const lootingStartedAtMs = this.phaseEndsAtMs;
       this.phase = 'LOOTING';
@@ -317,13 +351,21 @@ export class AuthoritativeRoomSimulation {
       // `serverNowMs`, so a late timer callback shortens the day instead of
       // extending it — the same rule the looting deadline follows.
       this.phaseEndsAtMs = lootingEndedAtMs + GAME.survivalDurationMs;
+      this.readiness = new SurvivalReadinessAuthority({
+        roomCode: this.roomCode,
+        dayNumber: this.survivalDay,
+        startedAtMs: lootingEndedAtMs,
+        playerIds: this.committedSurvivalState.households.map((household) => household.playerId),
+      });
       phaseChanged = true;
       tallyCommitted = true;
     }
 
-    // Survival deliberately has no exit transition yet. Reaching the deadline is
-    // what will auto-end the day for anyone who has not ended it themselves, and
-    // that belongs with the end-of-day flow rather than with this scaffold.
+    // Readiness ends at the deadline, but the phase does not advance: the next
+    // task can hook resolution directly onto `allPlayersEnded()`.
+    if (this.phase === 'SURVIVAL' && this.readiness) {
+      readinessChanged = this.readiness.endExpiredPlayers(serverNowMs).changed;
+    }
 
     const movementAllowed = this.phase === 'LOOTING'
       && (this.phaseEndsAtMs === null || serverNowMs < this.phaseEndsAtMs);
@@ -382,7 +424,7 @@ export class AuthoritativeRoomSimulation {
     const snapshotDue = this.phase !== 'SURVIVAL' && this.phase !== 'TALLY'
       && this.snapshotAccumulatorSeconds + Number.EPSILON >= snapshotInterval;
     if (snapshotDue) this.snapshotAccumulatorSeconds -= snapshotInterval;
-    return { phaseChanged, tallyCommitted, snapshotDue };
+    return { phaseChanged, tallyCommitted, snapshotDue, readinessChanged };
   }
 
   snapshot(serverNowMs: number): GameSnapshot {

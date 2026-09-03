@@ -7,6 +7,8 @@ import {
   type MatchTally,
   type RoomCommandResult,
   type SurvivalState,
+  type SurvivalEndDayResult,
+  type SurvivalReadinessState,
   type RoomPublicState,
   type ServerToClientEvents,
   CLIENT_EVENTS,
@@ -43,6 +45,16 @@ function command(
       payload,
       resolve,
     );
+  });
+}
+
+function endDay(socket: TestClient, payload: Record<string, unknown> = {}): Promise<SurvivalEndDayResult> {
+  return new Promise((resolve) => {
+    (socket.emit as unknown as (
+      event: string,
+      body: Record<string, unknown>,
+      callback: (result: SurvivalEndDayResult) => void,
+    ) => TestClient)('survival:end-day', payload, resolve);
   });
 }
 
@@ -387,6 +399,7 @@ describe('authenticated Socket.IO room lifecycle', () => {
     // nothing to submit: emitting the server's own event name reaches no handler
     // and the committed households stay exactly as the server built them.
     expect(Object.values(CLIENT_EVENTS)).not.toContain('survival:state');
+    expect(Object.values(CLIENT_EVENTS)).toContain('survival:end-day');
     (host.emit as (name: string, body: unknown) => unknown)('survival:state', {
       ...households,
       households: [{
@@ -433,5 +446,91 @@ describe('authenticated Socket.IO room lifecycle', () => {
     expect(await replayedHouseholds).toEqual(households);
     expect(await command(refreshed, 'lobby:start', {}))
       .toMatchObject({ ok: false, error: { code: 'MATCH_ALREADY_STARTED' } });
+  });
+
+  it('authenticates End Day ownership, broadcasts changes once, and reaches all-ended early', async () => {
+    const host = await connect(0);
+    const second = await connect(1);
+    const created = await command(host, 'room:create', {});
+    if (!created.ok || !created.room) throw new Error('Expected room creation success');
+    await command(second, 'room:join', { code: created.room.code });
+    await command(host, 'lobby:ready', { ready: true });
+    await command(second, 'lobby:ready', { ready: true });
+
+    const lootingState = nextLobbyState(host, (room) => room.phase === 'LOOTING');
+    await command(host, 'lobby:start', {});
+    serverNowMs = 1_010;
+    const looting = await lootingState;
+    const lootingDeadline = looting.phaseEndsAtMs!;
+
+    const initialReadiness = new Promise<SurvivalReadinessState>((resolve) => {
+      host.once('survival:readiness', resolve);
+    });
+    serverNowMs = lootingDeadline;
+    const initial = await initialReadiness;
+    expect(initial).toMatchObject({ activePlayerCount: 2, allPlayersEnded: false });
+
+    let changedBroadcasts = 0;
+    host.on('survival:readiness', () => { changedBroadcasts += 1; });
+    const forged = await endDay(host, { playerId: users[1]!.id });
+    expect(forged).toMatchObject({ ok: false, error: { code: 'INVALID_PAYLOAD' } });
+    expect(changedBroadcasts).toBe(0);
+
+    const hostChanged = new Promise<SurvivalReadinessState>((resolve) => {
+      second.once('survival:readiness', resolve);
+    });
+    const hostEnded = await endDay(host);
+    expect(hostEnded).toMatchObject({
+      ok: true,
+      readiness: { activePlayerCount: 1, allPlayersEnded: false },
+    });
+    expect((await hostChanged).players).toContainEqual(expect.objectContaining({
+      playerId: users[0]!.id,
+      hasEnded: true,
+      endedBy: 'MANUAL',
+    }));
+
+    const repeated = await endDay(host);
+    expect(repeated).toEqual(hostEnded);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(changedBroadcasts).toBe(1);
+
+    const allEnded = await endDay(second);
+    expect(allEnded).toMatchObject({
+      ok: true,
+      readiness: { activePlayerCount: 0, allPlayersEnded: true },
+    });
+    expect(serverNowMs).toBeLessThan(initial.endsAtMs);
+  });
+
+  it('auto-ends a survival day from the server clock without a client timeout event', async () => {
+    const host = await connect(0);
+    const created = await command(host, 'room:create', {});
+    if (!created.ok || !created.room) throw new Error('Expected room creation success');
+    await command(host, 'lobby:ready', { ready: true });
+    const lootingState = nextLobbyState(host, (room) => room.phase === 'LOOTING');
+    await command(host, 'lobby:start', {});
+    serverNowMs = 1_010;
+    const looting = await lootingState;
+
+    const initialReadiness = new Promise<SurvivalReadinessState>((resolve) => {
+      host.once('survival:readiness', resolve);
+    });
+    serverNowMs = looting.phaseEndsAtMs!;
+    const initial = await initialReadiness;
+    const timedOut = new Promise<SurvivalReadinessState>((resolve) => {
+      const listener = (state: SurvivalReadinessState) => {
+        if (!state.allPlayersEnded) return;
+        host.off('survival:readiness', listener);
+        resolve(state);
+      };
+      host.on('survival:readiness', listener);
+    });
+    serverNowMs = initial.endsAtMs;
+    expect(await timedOut).toMatchObject({
+      activePlayerCount: 0,
+      allPlayersEnded: true,
+      players: [{ hasEnded: true, endedAtMs: initial.endsAtMs, endedBy: 'TIMEOUT' }],
+    });
   });
 });

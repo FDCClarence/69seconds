@@ -5,6 +5,7 @@ import {
   type ServerToClientEvents,
   type ClientToServerEvents,
   type SurvivalState,
+  type SurvivalReadinessState,
 } from '@69-seconds/shared';
 import type { Socket } from 'socket.io-client';
 import { describe, expect, it, vi } from 'vitest';
@@ -180,5 +181,34 @@ describe('SocketRoomClient gameplay synchronization', () => {
       message: 'Received an invalid survival state',
       retryable: true,
     });
+  });
+
+  it('accepts authoritative readiness and rejects inconsistent counts', () => {
+    const socket = new FakeSocket();
+    const client = new SocketRoomClient(socket as unknown as Socket<ServerToClientEvents, ClientToServerEvents>);
+    const state: SurvivalReadinessState = {
+      roomCode: 'ABC234',
+      dayNumber: 1,
+      startedAtMs: 71_000,
+      endsAtMs: 191_000,
+      durationMs: 120_000,
+      players: [{ playerId: 'player-1', hasEnded: false, endedAtMs: null, endedBy: null }],
+      activePlayerCount: 1,
+      allPlayersEnded: false,
+    };
+    const received: SurvivalReadinessState[] = [];
+    const errors: RoomClientError[] = [];
+    client.subscribe({
+      onRoom: () => {},
+      onClosed: () => {},
+      onConnection: () => {},
+      onError: (error) => errors.push(error),
+      onSurvivalReadiness: (next) => received.push(next),
+    });
+
+    socket.emitFromServer('survival:readiness', state);
+    socket.emitFromServer('survival:readiness', { ...state, allPlayersEnded: true });
+    expect(received).toEqual([state]);
+    expect(errors).toHaveLength(1);
   });
 });

@@ -11,6 +11,8 @@ import {
   shoveLandedSchema,
   shoveResultSchema,
   survivalStateSchema,
+  survivalEndDayResultSchema,
+  survivalReadinessStateSchema,
   type ClientToServerEvents,
   type ClientInput,
   type GameSnapshot,
@@ -29,6 +31,7 @@ import {
   type ShoveRequest,
   type ShoveResult,
   type SurvivalState,
+  type SurvivalReadinessState,
 } from '@69-seconds/shared';
 import { io, type Socket } from 'socket.io-client';
 
@@ -45,6 +48,7 @@ export interface RoomClientListeners {
    * client has no event with which to send any of it back.
    */
   onSurvivalState?(state: SurvivalState): void;
+  onSurvivalReadiness?(state: SurvivalReadinessState): void;
 }
 
 export interface RoomClient {
@@ -63,6 +67,7 @@ export interface RoomClient {
   subscribeLootSync?(listener: (sync: LootSync) => void): () => void;
   subscribeLootUpdates?(listener: (update: LootUpdate) => void): () => void;
   subscribeShoveLanded?(listener: (event: ShoveLanded) => void): () => void;
+  endDay?(): Promise<SurvivalReadinessState>;
 }
 
 export class RoomClientError extends Error {
@@ -186,6 +191,14 @@ export class SocketRoomClient implements RoomClient {
         return;
       }
       for (const listener of this.listeners) listener.onSurvivalState?.(parsed.data);
+    });
+    socket.on('survival:readiness', (payload) => {
+      const parsed = survivalReadinessStateSchema.safeParse(payload);
+      if (!parsed.success) {
+        this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received invalid survival readiness', retryable: true });
+        return;
+      }
+      for (const listener of this.listeners) listener.onSurvivalReadiness?.(parsed.data);
     });
   }
 
@@ -329,6 +342,36 @@ export class SocketRoomClient implements RoomClient {
           return;
         }
         resolve(parsed.data);
+      });
+    });
+  }
+
+  /** Sends only the local player's intent; identity and day are server-owned. */
+  endDay(): Promise<SurvivalReadinessState> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket.connected) {
+        reject(new RoomClientError('INTERNAL_ERROR', 'Not connected to the match server', true));
+        return;
+      }
+      const timeout = window.setTimeout(() => {
+        reject(new RoomClientError('INTERNAL_ERROR', 'The match server did not acknowledge End Day', true));
+      }, 5_000);
+      this.socket.emit('survival:end-day', {}, (payload: unknown) => {
+        window.clearTimeout(timeout);
+        const parsed = survivalEndDayResultSchema.safeParse(payload);
+        if (!parsed.success) {
+          reject(new RoomClientError('INVALID_PAYLOAD', 'The match server returned invalid End Day state', true));
+          return;
+        }
+        if (!parsed.data.ok) {
+          reject(new RoomClientError(
+            parsed.data.error.code,
+            parsed.data.error.message,
+            parsed.data.error.retryable,
+          ));
+          return;
+        }
+        resolve(parsed.data.readiness);
       });
     });
   }

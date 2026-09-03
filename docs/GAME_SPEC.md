@@ -206,6 +206,8 @@ Starting values live only in `packages/shared/src/survival-table.ts`: Health 100
 
 Survival state is server-authoritative and read-only to clients. It is broadcast once as `survival:state` after the looting result and replayed verbatim to a reconnecting member. No client event carries stats, maxes, daily costs, or alive state, so none of it can be submitted.
 
+End Day readiness is separate mutable server state. Each player may send only an empty `survival:end-day` intent; the authenticated socket determines the household, and the current server phase, day, and deadline determine whether it is valid. Ending locks that household's remaining decisions for the day. Requests are idempotent, unfinished households are automatically ended by the server at 120 seconds, and the broadcast `survival:readiness` state reports every player's completion, the number still active, and whether all players have ended. Reaching that all-ended condition does not resolve or advance the day yet.
+
 ### Day numbering and the day transition
 
 The grocery run happens **before Day 1**, so the day the buzzer opens is Day 1. `dayNumber` is carried on the survival state, the server owns it, and it starts at `SURVIVAL.firstDayNumber`. Clients render the number they are given and never derive, increment, or report one — no client event carries a day. Advancing to Day 2 is not implemented; the number is a server field and an initializer parameter so the coming end-of-day flow can open the next day through the same call.
