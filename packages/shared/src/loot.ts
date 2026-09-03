@@ -1,46 +1,30 @@
 import { GAME } from './constants.js';
+import { LOOT_CATALOG, type LootCatalogEntry } from './loot-table.js';
 
 /**
- * Presentation-neutral loot data. The authoritative match service generates its
- * item set from this catalog; the Phaser client uses the same entries only to
- * label and colour markers. The local prototype resolver that used to live here
- * was replaced in Step 8 by server-owned availability and cart decisions.
+ * Loot helpers shared by the authoritative match service and the Phaser client.
+ * The tunable data itself — item list, counts, and spawn odds — lives in
+ * `loot-table.ts`; the per-match draw lives in `loot-spawn.ts`.
  */
-export interface LootCatalogEntry {
+
+/** A candidate position on the map. A match fills only a random subset of these. */
+export interface LootSpawnLocation {
   id: string;
-  label: string;
-  shortLabel: string;
-  color: number;
-  category: LootCategory;
-}
-
-export const LOOT_CATEGORIES = ['produce', 'bakery', 'dairy', 'pantry', 'drinks', 'household'] as const;
-export type LootCategory = (typeof LOOT_CATEGORIES)[number];
-
-export const LOOT_CATALOG = [
-  { id: 'apples', label: 'Apples', shortLabel: 'APL', color: 0xe85f50, category: 'produce' },
-  { id: 'bread', label: 'Bread', shortLabel: 'BRD', color: 0xeebd62, category: 'bakery' },
-  { id: 'milk', label: 'Milk', shortLabel: 'MLK', color: 0x83c6dc, category: 'dairy' },
-  { id: 'beans', label: 'Beans', shortLabel: 'BNS', color: 0x8ea96c, category: 'pantry' },
-  { id: 'pasta', label: 'Pasta', shortLabel: 'PST', color: 0xe69446, category: 'pantry' },
-  { id: 'tea', label: 'Tea', shortLabel: 'TEA', color: 0x6d966b, category: 'drinks' },
-  { id: 'soap', label: 'Soap', shortLabel: 'SOP', color: 0x937cbd, category: 'household' },
-  { id: 'rice', label: 'Rice', shortLabel: 'RIC', color: 0xd8d2bd, category: 'pantry' },
-  { id: 'eggs', label: 'Eggs', shortLabel: 'EGG', color: 0xf4e7a4, category: 'dairy' },
-  { id: 'juice', label: 'Juice', shortLabel: 'JCE', color: 0xf08d45, category: 'drinks' },
-  { id: 'coffee', label: 'Coffee', shortLabel: 'COF', color: 0x93684e, category: 'drinks' },
-  { id: 'tomatoes', label: 'Tomatoes', shortLabel: 'TOM', color: 0xd95548, category: 'produce' },
-] as const satisfies readonly LootCatalogEntry[];
-
-export type LootCatalogId = (typeof LOOT_CATALOG)[number]['id'];
-export type CartId = `cart-${number}`;
-
-export interface LootSpawnPoint {
-  id: string;
-  catalogId: LootCatalogId;
   x: number;
   y: number;
 }
+
+/**
+ * One drawn item at one location. `id` is the location id, so it is unique even
+ * though the same `catalogId` appears many times in a match. Catalog ids are
+ * runtime data drawn from the loot table, so this stays a plain string; use
+ * {@link lootCatalogEntry} to resolve one and fail loudly on a bad id.
+ */
+export interface LootSpawnPoint extends LootSpawnLocation {
+  catalogId: string;
+}
+
+export type CartId = `cart-${number}`;
 
 export function lootCatalogEntry(catalogId: string): LootCatalogEntry {
   const entry = LOOT_CATALOG.find((candidate) => candidate.id === catalogId);

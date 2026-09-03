@@ -218,23 +218,23 @@ describe('authentication application', () => {
       callbacks.onReady?.();
       callbacks.onInventoryChange?.({
         carriedItems: [
-          { id: 'loot-milk', label: 'Milk', shortLabel: 'MLK', color: '#83c6dc', pending: false },
-          { id: 'loot-bread', label: 'Bread', shortLabel: 'BRD', color: '#eebd62', pending: true },
+          { id: 'loot-water', label: 'Bottled Water', shortLabel: 'WTR', color: '#6fb7d8', pending: false },
+          { id: 'loot-map', label: 'Map', shortLabel: 'MAP', color: '#c2b280', pending: true },
         ],
         depositedCount: 2,
         synchronized: true,
       });
-      callbacks.onFeedback?.({ kind: 'PICKED_UP', message: 'Picked up Milk' });
+      callbacks.onFeedback?.({ kind: 'PICKED_UP', message: 'Picked up Bottled Water' });
       return { destroy: () => undefined };
     };
     const startedLobby: RoomPublicState = { ...lobby, phase: 'COUNTDOWN', phaseEndsAtMs: 4_000 };
     renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), roomClientStub({
       joinRoom: vi.fn().mockResolvedValue(startedLobby),
     }), bridgeFactory);
-    expect(await screen.findByLabelText('Milk in carry slot 1')).toBeTruthy();
-    expect(screen.getByLabelText('Bread in carry slot 2, awaiting confirmation')).toBeTruthy();
+    expect(await screen.findByLabelText('Bottled Water in carry slot 1')).toBeTruthy();
+    expect(screen.getByLabelText('Map in carry slot 2, awaiting confirmation')).toBeTruthy();
     expect(screen.getByLabelText('2 items deposited')).toBeTruthy();
-    expect(screen.getByRole('status').textContent).toContain('Picked up Milk');
+    expect(screen.getByRole('status').textContent).toContain('Picked up Bottled Water');
   });
 
   it('renders the sprint bar and shove readiness through the narrow Phaser bridge', async () => {
@@ -411,17 +411,17 @@ describe('authentication application', () => {
       lootingEndedAtMs: 70_000,
       durationMs: 69_000,
       totalItems: 2,
-      categoryTotals: [{ category: 'dairy', count: 1 }, { category: 'bakery', count: 1 }],
+      categoryTotals: [{ category: 'food', count: 1 }, { category: 'misc', count: 1 }],
       players: [{
         playerId: player.id,
         displayName: player.username,
         slot: 0,
         isConnectedAtEnd: true,
         totalItems: 2,
-        categoryTotals: [{ category: 'dairy', count: 1 }, { category: 'bakery', count: 1 }],
+        categoryTotals: [{ category: 'food', count: 1 }, { category: 'misc', count: 1 }],
         items: [
-          { id: 'loot-milk', catalogId: 'milk', label: 'Milk', category: 'dairy' },
-          { id: 'loot-bread', catalogId: 'bread', label: 'Bread', category: 'bakery' },
+          { id: 'loot-water', catalogId: 'bottled-water', label: 'Bottled Water', category: 'food' },
+          { id: 'loot-map', catalogId: 'map', label: 'Map', category: 'misc' },
         ],
       }],
     };
@@ -449,8 +449,8 @@ describe('authentication application', () => {
     act(() => listeners?.onResult?.(result));
     expect(await screen.findByRole('heading', { name: 'Time’s up.' })).toBeTruthy();
     expect(screen.getByLabelText('2 items deposited in total')).toBeTruthy();
-    expect(screen.getByText('Milk')).toBeTruthy();
-    expect(screen.getByText('Bread')).toBeTruthy();
+    expect(screen.getByText('Bottled Water')).toBeTruthy();
+    expect(screen.getByText('Map')).toBeTruthy();
     expect(screen.getByText('Present at the buzzer')).toBeTruthy();
 
     await userEvent.click(screen.getByRole('button', { name: 'Return home' }));

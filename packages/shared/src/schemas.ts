@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { GAME, SPRINT } from './constants.js';
-import { LOOT_CATEGORIES } from './loot.js';
+import { LOOT_CATEGORIES } from './loot-table.js';
 
 export const gamePhaseSchema = z.enum(['LOBBY', 'COUNTDOWN', 'LOOTING', 'TALLY']);
 export const playerConnectionStateSchema = z.enum(['CONNECTED', 'RECONNECTING']);

@@ -20,9 +20,9 @@ function sync(overrides: Partial<LootSync> = {}): LootSync {
     sequence: 0,
     roomCode: 'ABC234',
     items: [
-      { id: 'loot-apples', catalogId: 'apples', position: { x: 900, y: 600 }, available: true },
-      { id: 'loot-bread', catalogId: 'bread', position: { x: 910, y: 600 }, available: true },
-      { id: 'loot-milk', catalogId: 'milk', position: { x: 920, y: 600 }, available: false },
+      { id: 'loot-soup', catalogId: 'canned-soup', position: { x: 900, y: 600 }, available: true },
+      { id: 'loot-water', catalogId: 'bottled-water', position: { x: 910, y: 600 }, available: true },
+      { id: 'loot-map', catalogId: 'map', position: { x: 920, y: 600 }, available: false },
     ],
     carts: [{ id: 'cart-0', slot: 0, ownerPlayerId: 'player-0', itemIds: [] }],
     carriedCounts: [{ playerId: 'player-0', count: 0 }, { playerId: 'player-1', count: 1 }],
@@ -43,30 +43,30 @@ describe('client loot view', () => {
 
     const view = applyLootSync(empty, sync());
     expect(view.synchronized).toBe(true);
-    expect(visibleItems(view).map((item) => item.id)).toEqual(['loot-apples', 'loot-bread']);
+    expect(visibleItems(view).map((item) => item.id)).toEqual(['loot-soup', 'loot-water']);
     expect(view.carriedCounts['player-1']).toBe(1);
     expect(cartById(view, 'cart-0')?.ownerPlayerId).toBe('player-0');
   });
 
   it('hides a predicted pickup immediately and confirms it on acknowledgement', () => {
-    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-apples');
-    expect(isItemVisible(predicted, 'loot-apples')).toBe(false);
-    expect(predictedCarriedItemIds(predicted)).toEqual(['loot-apples']);
+    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-soup');
+    expect(isItemVisible(predicted, 'loot-soup')).toBe(false);
+    expect(predictedCarriedItemIds(predicted)).toEqual(['loot-soup']);
 
     const confirmed = applyInteractionResult(predicted, {
       outcome: 'PICKED_UP',
       requestId: REQUEST_ID,
-      itemId: 'loot-apples',
-      catalogId: 'apples',
-      carriedItemIds: ['loot-apples'],
+      itemId: 'loot-soup',
+      catalogId: 'canned-soup',
+      carriedItemIds: ['loot-soup'],
     });
     expect(confirmed.pendingPickups).toEqual([]);
-    expect(confirmed.carriedItemIds).toEqual(['loot-apples']);
-    expect(isItemVisible(confirmed, 'loot-apples')).toBe(false);
+    expect(confirmed.carriedItemIds).toEqual(['loot-soup']);
+    expect(isItemVisible(confirmed, 'loot-soup')).toBe(false);
   });
 
   it('rolls the marker and the carry slot back when the server refuses', () => {
-    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-apples');
+    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-soup');
     const rejected: InteractionResult = {
       outcome: 'REJECTED',
       requestId: REQUEST_ID,
@@ -79,32 +79,32 @@ describe('client loot view', () => {
     expect(rolledBack.pendingPickups).toEqual([]);
     expect(rolledBack.carriedItemIds).toEqual([]);
     expect(predictedCarriedItemIds(rolledBack)).toEqual([]);
-    expect(isItemVisible(rolledBack, 'loot-apples')).toBe(true);
+    expect(isItemVisible(rolledBack, 'loot-soup')).toBe(true);
   });
 
   it('rolls back a prediction whose acknowledgement never arrives', () => {
-    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-apples');
+    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-soup');
     const abandoned = rollbackPickup(predicted, REQUEST_ID);
     expect(abandoned.pendingPickups).toEqual([]);
-    expect(isItemVisible(abandoned, 'loot-apples')).toBe(true);
+    expect(isItemVisible(abandoned, 'loot-soup')).toBe(true);
   });
 
   it('refuses to predict an unavailable item or a fifth carry slot', () => {
     const view = applyLootSync(createLootView(), sync({
       carriedItemIds: ['loot-a', 'loot-b', 'loot-c', 'loot-d'],
     }));
-    expect(predictPickup(view, REQUEST_ID, 'loot-milk').pendingPickups).toEqual([]);
-    expect(predictPickup(view, REQUEST_ID, 'loot-apples').pendingPickups).toEqual([]);
+    expect(predictPickup(view, REQUEST_ID, 'loot-map').pendingPickups).toEqual([]);
+    expect(predictPickup(view, REQUEST_ID, 'loot-soup').pendingPickups).toEqual([]);
     expect(predictedCarriedItemIds(view)).toHaveLength(GAME.maxCarriedItems);
   });
 
   it('removes an item another player won and settles our competing prediction', () => {
-    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-apples');
-    const lost = applyLootUpdate(predicted, pickedUpBy('player-1', 'loot-apples', 1, 2));
+    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-soup');
+    const lost = applyLootUpdate(predicted, pickedUpBy('player-1', 'loot-soup', 1, 2));
 
-    expect(lost.items['loot-apples']?.available).toBe(false);
+    expect(lost.items['loot-soup']?.available).toBe(false);
     expect(lost.pendingPickups).toEqual([]);
-    expect(isItemVisible(lost, 'loot-apples')).toBe(false);
+    expect(isItemVisible(lost, 'loot-soup')).toBe(false);
     expect(lost.carriedCounts['player-1']).toBe(2);
   });
 
@@ -116,22 +116,22 @@ describe('client loot view', () => {
       roomCode: 'ABC234',
       playerId: 'player-0',
       cartId: 'cart-0',
-      itemIds: ['loot-apples', 'loot-bread'],
+      itemIds: ['loot-soup', 'loot-water'],
       cartItemCount: 2,
       carriedCount: 0,
     });
-    expect(cartById(deposited, 'cart-0')?.itemIds).toEqual(['loot-apples', 'loot-bread']);
+    expect(cartById(deposited, 'cart-0')?.itemIds).toEqual(['loot-soup', 'loot-water']);
 
     const restocked = applyLootUpdate(deposited, {
       type: 'RESTOCKED',
       sequence: 2,
       roomCode: 'ABC234',
       playerId: 'player-1',
-      itemIds: ['loot-milk'],
+      itemIds: ['loot-map'],
       carriedCount: 0,
     });
-    expect(restocked.items['loot-milk']?.available).toBe(true);
-    expect(isItemVisible(restocked, 'loot-milk')).toBe(true);
+    expect(restocked.items['loot-map']?.available).toBe(true);
+    expect(isItemVisible(restocked, 'loot-map')).toBe(true);
   });
 
   it('does not duplicate a deposit received through both its acknowledgement and broadcast', () => {
@@ -140,7 +140,7 @@ describe('client loot view', () => {
       outcome: 'DEPOSITED',
       requestId: REQUEST_ID,
       cartId: 'cart-0',
-      itemIds: ['loot-apples', 'loot-bread'],
+      itemIds: ['loot-soup', 'loot-water'],
       cartItemCount: 2,
       carriedItemIds: [],
     };
@@ -151,20 +151,20 @@ describe('client loot view', () => {
       roomCode: 'ABC234',
       playerId: 'player-0',
       cartId: 'cart-0',
-      itemIds: ['loot-apples', 'loot-bread'],
+      itemIds: ['loot-soup', 'loot-water'],
       cartItemCount: 2,
       carriedCount: 0,
     };
     const updated = applyLootUpdate(acknowledged, broadcast);
     const duplicate = applyLootUpdate(updated, broadcast);
 
-    expect(cartById(updated, 'cart-0')?.itemIds).toEqual(['loot-apples', 'loot-bread']);
+    expect(cartById(updated, 'cart-0')?.itemIds).toEqual(['loot-soup', 'loot-water']);
     expect(duplicate).toBe(updated);
   });
 
   it('ignores stale updates and stale syncs', () => {
-    const view = applyLootUpdate(applyLootSync(createLootView(), sync({ sequence: 5 })), pickedUpBy('player-1', 'loot-apples', 2));
-    expect(view.items['loot-apples']?.available).toBe(true);
+    const view = applyLootUpdate(applyLootSync(createLootView(), sync({ sequence: 5 })), pickedUpBy('player-1', 'loot-soup', 2));
+    expect(view.items['loot-soup']?.available).toBe(true);
     expect(view.sequence).toBe(5);
 
     const stale = applyLootSync(view, sync({ sequence: 1, items: [] }));
@@ -172,15 +172,15 @@ describe('client loot view', () => {
   });
 
   it('discards predictions on a resynchronization, because the server state is complete', () => {
-    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-apples');
-    const resynchronized = applyLootSync(predicted, sync({ sequence: 9, carriedItemIds: ['loot-bread'] }));
+    const predicted = predictPickup(applyLootSync(createLootView(), sync()), REQUEST_ID, 'loot-soup');
+    const resynchronized = applyLootSync(predicted, sync({ sequence: 9, carriedItemIds: ['loot-water'] }));
     expect(resynchronized.pendingPickups).toEqual([]);
-    expect(resynchronized.carriedItemIds).toEqual(['loot-bread']);
-    expect(isItemVisible(resynchronized, 'loot-apples')).toBe(true);
+    expect(resynchronized.carriedItemIds).toEqual(['loot-water']);
+    expect(isItemVisible(resynchronized, 'loot-soup')).toBe(true);
   });
 
   it('does not apply broadcasts received before the first synchronization', () => {
-    const view = applyLootUpdate(createLootView(), pickedUpBy('player-1', 'loot-apples', 0));
+    const view = applyLootUpdate(createLootView(), pickedUpBy('player-1', 'loot-soup', 0));
     expect(view.synchronized).toBe(false);
     expect(view.items).toEqual({});
   });

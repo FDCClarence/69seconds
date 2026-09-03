@@ -2,7 +2,8 @@ import {
   GAME,
   GROCERY_STORE_CARTS,
   GROCERY_STORE_COLLISION,
-  GROCERY_STORE_LOOT_SPAWNS,
+  GROCERY_STORE_LOOT_LOCATIONS,
+  type LootSpawnLocation,
   STORE_CENTRAL_SPAWN,
   type CartId,
 } from '@69-seconds/shared';
@@ -64,7 +65,7 @@ export const STORE_COLLISION_LAYER: readonly StoreRectangle[] = GROCERY_STORE_CO
 export const STORE_OBJECT_LAYER = {
   playerSpawn: STORE_CENTRAL_SPAWN,
   carts: GROCERY_STORE_CARTS satisfies readonly StoreCart[],
-  lootSpawnPoints: GROCERY_STORE_LOOT_SPAWNS,
+  lootSpawnLocations: GROCERY_STORE_LOOT_LOCATIONS,
 } as const;
 
 export const GENERATED_GROCERY_STORE_MAP = {
@@ -141,7 +142,7 @@ export function unreachableStoreRoutes(map = GENERATED_GROCERY_STORE_MAP): strin
   }
 
   const targets = [
-    ...map.objectLayer.lootSpawnPoints.map((item) => ({ id: item.id, x: item.x, y: item.y })),
+    ...map.objectLayer.lootSpawnLocations.map((item: LootSpawnLocation) => ({ id: item.id, x: item.x, y: item.y })),
     ...map.objectLayer.carts.map((cart) => ({ id: cart.id, x: cart.x, y: cart.y })),
   ];
   return targets.flatMap((target) => {

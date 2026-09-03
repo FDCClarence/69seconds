@@ -39,7 +39,7 @@ class FakeSocket {
 const initialSync: LootSync = {
   sequence: 0,
   roomCode: 'ABC234',
-  items: [{ id: 'loot-apples', catalogId: 'apples', position: { x: 100, y: 100 }, available: true }],
+  items: [{ id: 'loot-soup', catalogId: 'canned-soup', position: { x: 100, y: 100 }, available: true }],
   carts: [{ id: 'cart-0', slot: 0, ownerPlayerId: 'player-1', itemIds: [] }],
   carriedCounts: [{ playerId: 'player-1', count: 0 }],
   carriedItemIds: [],
@@ -54,7 +54,7 @@ describe('SocketRoomClient gameplay synchronization', () => {
       sequence: 1,
       roomCode: 'ABC234',
       playerId: 'player-1',
-      itemId: 'loot-apples',
+      itemId: 'loot-soup',
       carriedCount: 1,
     };
 
@@ -72,7 +72,7 @@ describe('SocketRoomClient gameplay synchronization', () => {
     const socket = new FakeSocket();
     const client = new SocketRoomClient(socket as unknown as Socket<ServerToClientEvents, ClientToServerEvents>);
     const update: LootUpdate = {
-      type: 'PICKED_UP', sequence: 3, roomCode: 'ABC234', playerId: 'player-1', itemId: 'loot-apples', carriedCount: 1,
+      type: 'PICKED_UP', sequence: 3, roomCode: 'ABC234', playerId: 'player-1', itemId: 'loot-soup', carriedCount: 1,
     };
 
     socket.emitFromServer('loot:sync', { ...initialSync, sequence: 2 });

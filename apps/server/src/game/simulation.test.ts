@@ -167,15 +167,19 @@ describe('authoritative movement simulation', () => {
   });
 
   it('validates interactions against the position the simulation itself owns', () => {
-    const simulation = new AuthoritativeRoomSimulation(room());
-    const near = { requestId: '00000000-0000-4000-8000-000000000001', action: 'PICK_UP' as const, targetId: 'loot-eggs' };
+    // An explicit spawn, because the production loot set is drawn at random per
+    // match: the assertion below is about geometry, not about which item landed.
+    const simulation = new AuthoritativeRoomSimulation(room(), {
+      spawns: [{ id: 'loot-corner', catalogId: 'canned-soup', x: 150, y: 165 }],
+    });
+    const near = { requestId: '00000000-0000-4000-8000-000000000001', action: 'PICK_UP' as const, targetId: 'loot-corner' };
 
     // Still in COUNTDOWN: the phase gate closes before any geometry is considered.
     expect(simulation.resolveInteraction('player-0', near, 1_500).result)
       .toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
 
     simulation.tick(2_000);
-    // Spawn slot 0 is at the store centre, far from every shelf item.
+    // Spawn slot 0 is at the store centre, far from the corner item.
     expect(simulation.resolveInteraction('player-0', near, 2_000).result)
       .toMatchObject({ outcome: 'REJECTED', reason: 'OUT_OF_RANGE' });
     expect(simulation.lootSyncFor('player-0')).toMatchObject({
@@ -363,8 +367,8 @@ describe('atomic end-of-looting tally', () => {
     base.players[1]!.position = { x: 1_100, y: 600 };
     return { base, simulation: new AuthoritativeRoomSimulation(base, {
       spawns: [
-        { id: 'loot-apples', catalogId: 'apples', x: 900, y: 600 },
-        { id: 'loot-soap', catalogId: 'soap', x: 1_100, y: 600 },
+        { id: 'loot-soup', catalogId: 'canned-soup', x: 900, y: 600 },
+        { id: 'loot-map', catalogId: 'map', x: 1_100, y: 600 },
       ],
       carts: [
         { id: 'cart-0', slot: 0, label: 'Cart 1', x: 900, y: 600, width: 128, height: 72 },
@@ -389,7 +393,7 @@ describe('atomic end-of-looting tally', () => {
     const pickup = simulation.resolveInteraction('player-0', {
       requestId: '00000000-0000-4000-8000-000000000201',
       action: 'PICK_UP',
-      targetId: 'loot-apples',
+      targetId: 'loot-soup',
     }, 2_001);
     expect(pickup.result.outcome).toBe('PICKED_UP');
     const deposit = simulation.resolveInteraction('player-0', {
@@ -408,7 +412,7 @@ describe('atomic end-of-looting tally', () => {
     expect(simulation.resolveInteraction('player-0', {
       requestId: '00000000-0000-4000-8000-000000000203',
       action: 'PICK_UP',
-      targetId: 'loot-soap',
+      targetId: 'loot-map',
     }, deadline).result).toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
     expect(simulation.resolveShove('player-0', shove('player-1'), deadline).result)
       .toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
@@ -424,14 +428,14 @@ describe('atomic end-of-looting tally', () => {
       lootingEndedAtMs: deadline,
       durationMs: GAME.lootingDurationMs,
       totalItems: 1,
-      categoryTotals: [{ category: 'produce', count: 1 }],
+      categoryTotals: [{ category: 'food', count: 1 }],
       players: [
         { playerId: 'player-0', totalItems: 1, isConnectedAtEnd: true },
         { playerId: 'player-1', totalItems: 0, isConnectedAtEnd: false },
       ],
     });
     expect(result?.players[0]?.items).toEqual([
-      { id: 'loot-apples', catalogId: 'apples', label: 'Apples', category: 'produce' },
+      { id: 'loot-soup', catalogId: 'canned-soup', label: 'Canned Soup', category: 'food' },
     ]);
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result?.players)).toBe(true);

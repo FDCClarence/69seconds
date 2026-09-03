@@ -1,7 +1,7 @@
 import {
   GAME,
   GROCERY_STORE_CARTS,
-  GROCERY_STORE_LOOT_SPAWNS,
+  generateLootSpawns,
   LOOT,
   assignedCartIdForSlot,
   cartLabel,
@@ -69,6 +69,7 @@ export interface InteractionResolution {
 }
 
 export interface LootAuthorityOptions {
+  /** Defaults to a fresh randomized draw from the shared loot table. */
   spawns?: readonly LootSpawnPoint[];
   carts?: readonly CartDefinition[];
   /** Defaults to the shared store collision, which is the production geometry. */
@@ -115,7 +116,7 @@ export class MatchLootAuthority {
   ) {
     this.roomCode = roomCode;
     this.collision = options.collision;
-    for (const spawn of options.spawns ?? GROCERY_STORE_LOOT_SPAWNS) {
+    for (const spawn of options.spawns ?? generateLootSpawns()) {
       this.items.set(spawn.id, {
         id: spawn.id,
         catalogId: spawn.catalogId,

@@ -168,7 +168,9 @@ is already standing inside a cart is pushed out of it rather than pinned there.
 - Other players' carts cannot receive a player's deposit.
 - Simultaneous conflicts are resolved by server processing order; every client receives the resulting authoritative state.
 
-Items retain their catalog labels and one of six presentation categories: produce, bakery, dairy, pantry, drinks, or household. The tally counts deposited item instances rather than assigning future resource values or building later bunker mechanics.
+Items retain their catalog labels and one of five presentation categories: food, weapons, medicine, entertainment, or misc. The tally counts deposited item instances rather than assigning future resource values or building later bunker mechanics.
+
+Each match draws its loot at random. The store publishes 80 candidate spawn locations and the server places `itemsPerMatch` items across a random subset of them, so no two matches share a layout and most locations stay empty. Category floors are guaranteed first — food 25, entertainment 5, misc 5, medicine 3, weapons 3 — and every remaining slot is drawn from the whole catalog by spawn weight. Because 50 items come from a 16-entry catalog, duplicates are normal; each placed item still carries a unique id. Item rarity is a spawn-odds label only: it does not change an item's value or behaviour. Counts, floors, the item list, and the odds all live in `packages/shared/src/loot-table.ts`.
 
 ## Timing and tally
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   GAME,
   GROCERY_STORE_CARTS,
-  GROCERY_STORE_LOOT_SPAWNS,
+  GROCERY_STORE_LOOT_LOCATIONS,
   LOOT,
   assignedCartIdForSlot,
   cartLabel,
@@ -10,7 +10,6 @@ import {
   hasLineOfAccess,
   isAssignedCart,
   isWithinInteractionRadius,
-  lootCatalogEntry,
 } from './index.js';
 
 describe('shared loot and cart rules', () => {
@@ -26,14 +25,13 @@ describe('shared loot and cart rules', () => {
     expect(cartLabel('cart-3')).toBe('Cart 4');
   });
 
-  it('publishes one server-readable spawn per catalog entry and one cart per player', () => {
-    expect(GROCERY_STORE_LOOT_SPAWNS).toHaveLength(12);
+  it('publishes uniquely identified spawn locations and one cart per player', () => {
+    expect(GROCERY_STORE_LOOT_LOCATIONS).toHaveLength(80);
     expect(GROCERY_STORE_CARTS).toHaveLength(GAME.maxPlayers);
-    expect(new Set(GROCERY_STORE_LOOT_SPAWNS.map((spawn) => spawn.id)).size)
-      .toBe(GROCERY_STORE_LOOT_SPAWNS.length);
-    for (const spawn of GROCERY_STORE_LOOT_SPAWNS) {
-      expect(lootCatalogEntry(spawn.catalogId).id).toBe(spawn.catalogId);
-    }
+    expect(new Set(GROCERY_STORE_LOOT_LOCATIONS.map((location) => location.id)).size)
+      .toBe(GROCERY_STORE_LOOT_LOCATIONS.length);
+    expect(new Set(GROCERY_STORE_LOOT_LOCATIONS.map((location) => `${location.x}:${location.y}`)).size)
+      .toBe(GROCERY_STORE_LOOT_LOCATIONS.length);
     for (const [index, cart] of GROCERY_STORE_CARTS.entries()) {
       expect(cart.id).toBe(assignedCartIdForSlot(index));
       expect(cart.slot).toBe(index);

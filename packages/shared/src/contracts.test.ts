@@ -93,7 +93,7 @@ describe('shared contracts', () => {
       outcome: 'PICKED_UP',
       requestId,
       itemId: 'loot-milk',
-      catalogId: 'milk',
+      catalogId: 'bottled-water',
       carriedItemIds: ['a', 'b', 'c', 'd', 'e'],
     })).toThrow();
   });
@@ -127,18 +127,18 @@ describe('shared contracts', () => {
       lootingEndedAtMs: 70_000,
       durationMs: GAME.lootingDurationMs,
       totalItems: 1,
-      categoryTotals: [{ category: 'dairy', count: 1 }],
+      categoryTotals: [{ category: 'food', count: 1 }],
       players: [{
         playerId: 'player-1',
         displayName: 'Player 1',
         slot: 0,
         isConnectedAtEnd: true,
         totalItems: 1,
-        categoryTotals: [{ category: 'dairy', count: 1 }],
-        items: [{ id: 'loot-milk', catalogId: 'milk', label: 'Milk', category: 'dairy' }],
+        categoryTotals: [{ category: 'food', count: 1 }],
+        items: [{ id: 'loot-water', catalogId: 'bottled-water', label: 'Bottled Water', category: 'food' }],
       }],
     });
-    expect(tally.players[0]?.items[0]?.label).toBe('Milk');
+    expect(tally.players[0]?.items[0]?.label).toBe('Bottled Water');
     expect(() => matchTallySchema.parse({ ...tally, durationMs: 68_000 })).toThrow();
     expect(() => matchTallySchema.parse({ ...tally, clientComputedWinner: 'player-1' })).toThrow();
   });

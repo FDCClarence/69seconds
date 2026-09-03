@@ -1,5 +1,5 @@
 import { GAME } from './constants.js';
-import type { CartId, LootSpawnPoint } from './loot.js';
+import type { CartId, LootSpawnLocation } from './loot.js';
 import type { Vector2 } from './schemas.js';
 
 export interface CollisionRectangle {
@@ -51,24 +51,46 @@ export const GROCERY_STORE_BOUNDS = {
 } as const;
 
 /**
- * Server-authoritative loot placement. The match service generates its item set
- * from this list and validates interaction distance against it; the Phaser map
- * re-exports the same data purely to draw markers in the right places.
+ * The 80 candidate loot positions, as `[x, y]` pairs. Every one sits in an open
+ * aisle: clear of the shelf rectangles above, clear of the cart footprints, and
+ * clear of the player start positions. A match places {@link LOOT_SPAWN_TABLE}
+ * `itemsPerMatch` items on a random subset of them, so most stay empty.
+ *
+ * Edit the pairs freely; ids are derived from the index and are not persisted.
  */
-export const GROCERY_STORE_LOOT_SPAWNS: readonly LootSpawnPoint[] = [
-  { id: 'loot-apples', catalogId: 'apples', x: 150, y: 175 },
-  { id: 'loot-bread', catalogId: 'bread', x: 510, y: 175 },
-  { id: 'loot-milk', catalogId: 'milk', x: 1_290, y: 175 },
-  { id: 'loot-beans', catalogId: 'beans', x: 1_650, y: 175 },
-  { id: 'loot-pasta', catalogId: 'pasta', x: 150, y: 390 },
-  { id: 'loot-tea', catalogId: 'tea', x: 510, y: 390 },
-  { id: 'loot-soap', catalogId: 'soap', x: 1_290, y: 390 },
-  { id: 'loot-rice', catalogId: 'rice', x: 1_650, y: 390 },
-  { id: 'loot-eggs', catalogId: 'eggs', x: 150, y: 880 },
-  { id: 'loot-juice', catalogId: 'juice', x: 510, y: 880 },
-  { id: 'loot-coffee', catalogId: 'coffee', x: 1_290, y: 880 },
-  { id: 'loot-tomatoes', catalogId: 'tomatoes', x: 1_650, y: 880 },
+const lootLocationCoordinates = [
+  // Top aisle, above the first shelf row.
+  [150, 165], [250, 165], [350, 165], [450, 165], [550, 165], [650, 165], [750, 165], [850, 165],
+  [950, 165], [1_050, 165], [1_150, 165], [1_250, 165], [1_350, 165], [1_450, 165], [1_550, 165], [1_650, 165],
+  // Aisle between shelf rows 1 and 2.
+  [150, 370], [250, 370], [350, 370], [450, 370], [550, 370], [650, 370], [750, 370], [850, 370],
+  [950, 370], [1_050, 370], [1_150, 370], [1_250, 370], [1_350, 370], [1_450, 370], [1_550, 370], [1_650, 370],
+  // Aisle between shelf rows 2 and 3. The four centre columns are left clear
+  // so nothing spawns on top of the player start cluster.
+  [150, 590], [250, 590], [350, 590], [450, 590], [550, 590], [650, 590], [1_150, 590], [1_250, 590],
+  [1_350, 590], [1_450, 590], [1_550, 590], [1_650, 590],
+  // Open floor below the last shelf row.
+  [150, 800], [250, 800], [350, 800], [450, 800], [550, 800], [650, 800], [750, 800], [850, 800],
+  [950, 800], [1_050, 800], [1_150, 800], [1_250, 800], [1_350, 800], [1_450, 800], [1_550, 800], [1_650, 800],
+  // Back aisle, above the carts.
+  [150, 940], [250, 940], [350, 940], [450, 940], [550, 940], [650, 940], [750, 940], [850, 940],
+  [950, 940], [1_050, 940], [1_150, 940], [1_250, 940], [1_350, 940], [1_450, 940], [1_550, 940], [1_650, 940],
+  // Side corridors, level with the shelf rows.
+  [60, 260], [60, 700], [1_740, 260], [1_740, 700],
 ] as const;
+
+/**
+ * Server-authoritative loot positions. The match service draws its item set
+ * across these; the Phaser map re-exports them purely as map data. Which of
+ * them actually hold an item is decided per match and arrives over the loot
+ * sync, so the client never assumes a location is occupied.
+ */
+export const GROCERY_STORE_LOOT_LOCATIONS: readonly LootSpawnLocation[] =
+  lootLocationCoordinates.map(([x, y], index) => ({
+    id: `loot-spot-${String(index + 1).padStart(2, '0')}`,
+    x,
+    y,
+  }));
 
 /** Slot-indexed cart ownership. Cart `slot` always equals the owning room slot. */
 export const GROCERY_STORE_CARTS: readonly CartDefinition[] = [

@@ -12,7 +12,7 @@ describe('generated grocery-store placeholder map', () => {
     expect(STORE_VISUAL_LAYERS.shelves).toHaveLength(12);
     expect(STORE_COLLISION_LAYER).toHaveLength(12);
     expect(STORE_OBJECT_LAYER.carts).toHaveLength(4);
-    expect(STORE_OBJECT_LAYER.lootSpawnPoints).toHaveLength(12);
+    expect(STORE_OBJECT_LAYER.lootSpawnLocations).toHaveLength(80);
   });
 
   it('has a collision-safe route from the central spawn to each pickup and cart', () => {

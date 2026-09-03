@@ -588,12 +588,11 @@ function Lobby({ code, room, matchTally, user, connection, networkError, onDismi
 }
 
 const CATEGORY_LABELS: Record<LootCategory, string> = {
-  produce: 'Produce',
-  bakery: 'Bakery',
-  dairy: 'Dairy',
-  pantry: 'Pantry',
-  drinks: 'Drinks',
-  household: 'Household',
+  food: 'Food',
+  weapons: 'Weapons',
+  medicine: 'Medicine',
+  entertainment: 'Entertainment',
+  misc: 'Misc',
 };
 
 function TallyScreen({ room, result, user, onLeave, onLogout }: {

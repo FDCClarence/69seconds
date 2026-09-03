@@ -43,11 +43,11 @@ const lootSeam = {
   spawns: [
     ...PLAYER_SPAWN_POSITIONS.map((spawn, slot) => ({
       id: `loot-slot-${slot}`,
-      catalogId: 'apples' as const,
+      catalogId: 'canned-soup' as const,
       x: spawn.x,
       y: spawn.y,
     })),
-    { id: 'loot-contested', catalogId: 'milk' as const, x: CONTESTED.x, y: CONTESTED.y },
+    { id: 'loot-contested', catalogId: 'bottled-water' as const, x: CONTESTED.x, y: CONTESTED.y },
   ],
   carts: PLAYER_SPAWN_POSITIONS.map((spawn, slot) => ({
     id: `cart-${slot}` as const,
