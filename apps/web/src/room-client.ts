@@ -80,13 +80,15 @@ export function createRoomClient(): RoomClient {
   }));
 }
 
-class SocketRoomClient implements RoomClient {
+export class SocketRoomClient implements RoomClient {
   private readonly listeners = new Set<RoomClientListeners>();
   private connectionState: SocketConnectionState = 'DISCONNECTED';
   private readonly snapshotListeners = new Set<(snapshot: GameSnapshot) => void>();
   private readonly lootSyncListeners = new Set<(sync: LootSync) => void>();
   private readonly lootUpdateListeners = new Set<(update: LootUpdate) => void>();
   private readonly shoveLandedListeners = new Set<(event: ShoveLanded) => void>();
+  private latestLootSync: LootSync | null = null;
+  private readonly lootUpdatesSinceSync: LootUpdate[] = [];
   private nextInputSequence = 0;
 
   constructor(private readonly socket: Socket<ServerToClientEvents, ClientToServerEvents>) {
@@ -130,6 +132,8 @@ class SocketRoomClient implements RoomClient {
         this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received invalid loot state', retryable: true });
         return;
       }
+      this.latestLootSync = parsed.data;
+      this.lootUpdatesSinceSync.splice(0, this.lootUpdatesSinceSync.length);
       for (const listener of this.lootSyncListeners) listener(parsed.data);
     });
     socket.on('loot:update', (payload) => {
@@ -137,6 +141,13 @@ class SocketRoomClient implements RoomClient {
       if (!parsed.success) {
         this.publishError({ code: 'INVALID_PAYLOAD', message: 'Received invalid loot update', retryable: true });
         return;
+      }
+      if (
+        this.latestLootSync?.roomCode === parsed.data.roomCode
+        && parsed.data.sequence > this.latestLootSync.sequence
+        && !this.lootUpdatesSinceSync.some((update) => update.sequence === parsed.data.sequence)
+      ) {
+        this.lootUpdatesSinceSync.push(parsed.data);
       }
       for (const listener of this.lootUpdateListeners) listener(parsed.data);
     });
@@ -166,6 +177,7 @@ class SocketRoomClient implements RoomClient {
 
   disconnect(): void {
     this.socket.disconnect();
+    this.clearGameplayCache();
     this.publishConnection('DISCONNECTED');
   }
 
@@ -177,23 +189,29 @@ class SocketRoomClient implements RoomClient {
 
   async createRoom(): Promise<RoomPublicState> {
     await this.ensureConnected();
-    return this.requiredRoom(await this.emitCommand((acknowledge) => {
+    const room = this.requiredRoom(await this.emitCommand((acknowledge) => {
       this.socket.emit('room:create', {}, acknowledge);
     }));
+    this.clearGameplayCache();
+    return room;
   }
 
   async joinRoom(code: string): Promise<RoomPublicState> {
     await this.ensureConnected();
-    return this.requiredRoom(await this.emitCommand((acknowledge) => {
+    const room = this.requiredRoom(await this.emitCommand((acknowledge) => {
       this.socket.emit('room:join', { code }, acknowledge);
     }));
+    this.clearGameplayCache();
+    return room;
   }
 
   async leaveRoom(): Promise<RoomPublicState | null> {
     await this.ensureConnected();
-    return this.emitCommand((acknowledge) => {
+    const room = await this.emitCommand((acknowledge) => {
       this.socket.emit('room:leave', {}, acknowledge);
     });
+    this.clearGameplayCache();
+    return room;
   }
 
   async setReady(ready: boolean): Promise<RoomPublicState> {
@@ -229,11 +247,13 @@ class SocketRoomClient implements RoomClient {
 
   subscribeLootSync(listener: (sync: LootSync) => void): () => void {
     this.lootSyncListeners.add(listener);
+    if (this.latestLootSync) listener(this.latestLootSync);
     return () => this.lootSyncListeners.delete(listener);
   }
 
   subscribeLootUpdates(listener: (update: LootUpdate) => void): () => void {
     this.lootUpdateListeners.add(listener);
+    for (const update of this.lootUpdatesSinceSync) listener(update);
     return () => this.lootUpdateListeners.delete(listener);
   }
 
@@ -344,6 +364,11 @@ class SocketRoomClient implements RoomClient {
   private requiredRoom(room: RoomPublicState | null): RoomPublicState {
     if (room) return room;
     throw new RoomClientError('INVALID_PAYLOAD', 'The room server omitted lobby state', true);
+  }
+
+  private clearGameplayCache(): void {
+    this.latestLootSync = null;
+    this.lootUpdatesSinceSync.splice(0, this.lootUpdatesSinceSync.length);
   }
 
   private publishConnection(state: SocketConnectionState): void {
