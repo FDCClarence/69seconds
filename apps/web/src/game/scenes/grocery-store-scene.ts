@@ -66,7 +66,7 @@ const SHELF_TEXTURE = 'prototype-shelf';
 const LOOT_MARKER_SIZE = 40;
 /** Small presentational lift that makes loot read as hovering over the floor. */
 const LOOT_HOVER_BASELINE = -3;
-const LOOT_HOVER_HEIGHT = 5;
+const LOOT_HOVER_HEIGHT = 10;
 
 /** Texture key for one catalog item's art. */
 function lootTextureKey(catalogId: string): string {
@@ -527,8 +527,8 @@ export class GroceryStoreScene extends Phaser.Scene {
 
     // Each item gets a slightly different cadence, avoiding a mechanically
     // synchronized field while leaving its authoritative interaction position intact.
-    const bobDuration = Phaser.Math.Between(1_650, 2_350);
-    const bobDelay = Phaser.Math.Between(0, bobDuration);
+    const bobDuration = Phaser.Math.Between(1_100, 1_500);
+    const bobDelay = Phaser.Math.Between(0, 450);
     this.tweens.add({
       targets: hoverLayer,
       y: LOOT_HOVER_BASELINE - LOOT_HOVER_HEIGHT,
@@ -540,9 +540,9 @@ export class GroceryStoreScene extends Phaser.Scene {
     });
     this.tweens.add({
       targets: shadow,
-      scaleX: 0.76,
-      scaleY: 0.72,
-      alpha: 0.25,
+      scaleX: 0.68,
+      scaleY: 0.62,
+      alpha: 0.2,
       duration: bobDuration,
       ease: 'Sine.easeInOut',
       yoyo: true,
