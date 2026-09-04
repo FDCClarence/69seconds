@@ -18,6 +18,7 @@ import {
   roomCodeSchema,
   roomCommandResultSchema,
   survivalStateSchema,
+  survivalConsumeRequestSchema,
   survivalEndDayRequestSchema,
   survivalReadinessStateSchema,
 } from './index.js';
@@ -215,14 +216,14 @@ describe('shared contracts', () => {
     })).toThrow();
   });
 
-  it('carries survival state one way and exposes only an empty End Day intent', () => {
+  it('carries survival state one way and exposes only intent-shaped survival requests', () => {
     // Server to client, and nowhere in the other direction: there is no client
     // event through which stats, maxes, daily costs, or alive state could be
     // submitted.
     expect(Object.values(SERVER_EVENTS)).toContain('survival:state');
     expect(Object.values(CLIENT_EVENTS)).not.toContain('survival:state');
     expect(Object.values(CLIENT_EVENTS).filter((event) => event.startsWith('survival:')))
-      .toEqual(['survival:end-day']);
+      .toEqual(['survival:end-day', 'survival:consume']);
     expect(survivalEndDayRequestSchema.parse({})).toEqual({});
     for (const forbidden of [
       { playerId: 'player-2' },
@@ -230,6 +231,27 @@ describe('shared contracts', () => {
       { timerMs: 1 },
       { result: 'ended' },
     ]) expect(() => survivalEndDayRequestSchema.parse(forbidden)).toThrow();
+  });
+
+  it('accepts a feeding intent and refuses every claimed outcome beside it', () => {
+    const intent = {
+      requestId: '00000000-0000-4000-8000-000000000001',
+      itemId: 'loot-slot-0',
+      characterId: 'player-1',
+    };
+    expect(survivalConsumeRequestSchema.parse(intent)).toEqual(intent);
+    // What the item restores and what the character can hold are the server's to
+    // read. A modified client has nowhere to put a resulting stat value, a
+    // household, another player, or a quantity.
+    for (const forbidden of [
+      { ...intent, playerId: 'player-2' },
+      { ...intent, nutrition: { current: 100, max: 100 } },
+      { ...intent, restored: 50 },
+      { ...intent, quantity: 2 },
+      { ...intent, stats: {} },
+      { requestId: intent.requestId, itemId: intent.itemId },
+      { requestId: 'not-a-uuid', itemId: intent.itemId, characterId: intent.characterId },
+    ]) expect(() => survivalConsumeRequestSchema.parse(forbidden)).toThrow();
   });
 
   it('validates internally consistent authoritative readiness', () => {

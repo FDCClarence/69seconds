@@ -489,6 +489,21 @@ export const lobbyStartRequestSchema = z.strictObject({});
 /** Identity, day, deadline, and result are all derived from the authenticated socket. */
 export const survivalEndDayRequestSchema = z.strictObject({});
 
+/**
+ * One feeding intent, and nothing else: which of your own inventory items, and
+ * which of your own characters. Strict on purpose — a modified client cannot
+ * smuggle a household, a stat, a restored amount, or a resulting value
+ * alongside it, because there is no field here to put one in. Identity comes
+ * from the authenticated socket, and what the item does comes from the shared
+ * consumable table the server reads.
+ */
+export const survivalConsumeRequestSchema = z.strictObject({
+  requestId: requestIdSchema,
+  /** The inventory item instance to spend, not a catalog id and not a count. */
+  itemId: itemIdSchema,
+  characterId: z.string().min(1).max(128),
+});
+
 export const serverErrorCodeSchema = z.enum([
   'INVALID_PAYLOAD',
   'UNAUTHENTICATED',
@@ -523,6 +538,42 @@ export const roomCommandResultSchema = z.discriminatedUnion('ok', [
 export const survivalEndDayResultSchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(true), readiness: survivalReadinessStateSchema }),
   z.strictObject({ ok: z.literal(false), error: serverErrorSchema }),
+]);
+
+export const survivalConsumeRejectionReasonSchema = z.enum([
+  'INVALID_PAYLOAD',
+  'NOT_IN_MATCH',
+  'INVALID_PHASE',
+  'DAY_ALREADY_ENDED',
+  'NO_HOUSEHOLD',
+  'UNKNOWN_ITEM',
+  'NOT_CONSUMABLE',
+  'UNKNOWN_CHARACTER',
+  'CHARACTER_DEAD',
+  'RATE_LIMITED',
+]);
+
+/**
+ * A committed feed restates the authoritative result — the fed character and
+ * the household's remaining inventory — so a client renders what the server
+ * decided rather than computing a restoration of its own. It is a restatement,
+ * never a submission: the same values only ever travel in this direction.
+ */
+export const survivalConsumeResultSchema = z.discriminatedUnion('outcome', [
+  z.strictObject({
+    outcome: z.literal('CONSUMED'),
+    requestId: requestIdSchema,
+    itemId: itemIdSchema,
+    catalogId: z.string().min(1).max(64),
+    character: survivalCharacterSchema,
+    inventory: z.array(survivalInventoryItemSchema).max(256),
+  }),
+  z.strictObject({
+    outcome: z.literal('REJECTED'),
+    requestId: requestIdSchema,
+    reason: survivalConsumeRejectionReasonSchema,
+    message: z.string().min(1),
+  }),
 ]);
 
 export const roomClosedSchema = z.object({
@@ -612,6 +663,9 @@ export type LobbyReadyRequest = z.infer<typeof lobbyReadyRequestSchema>;
 export type LobbyStartRequest = z.infer<typeof lobbyStartRequestSchema>;
 export type SurvivalEndDayRequest = z.infer<typeof survivalEndDayRequestSchema>;
 export type SurvivalEndDayResult = z.infer<typeof survivalEndDayResultSchema>;
+export type SurvivalConsumeRequest = z.infer<typeof survivalConsumeRequestSchema>;
+export type SurvivalConsumeRejectionReason = z.infer<typeof survivalConsumeRejectionReasonSchema>;
+export type SurvivalConsumeResult = z.infer<typeof survivalConsumeResultSchema>;
 export type ServerErrorCode = z.infer<typeof serverErrorCodeSchema>;
 export type ServerError = z.infer<typeof serverErrorSchema>;
 export type RoomCommandResult = z.infer<typeof roomCommandResultSchema>;

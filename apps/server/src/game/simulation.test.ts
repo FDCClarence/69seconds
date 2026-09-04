@@ -12,6 +12,7 @@ import {
   type ClientInput,
   type RoomPublicState,
   type ShoveRequest,
+  type SurvivalConsumeRequest,
 } from '@69-seconds/shared';
 import { describe, expect, it } from 'vitest';
 import { AuthoritativeRoomSimulation } from './simulation.js';
@@ -498,13 +499,26 @@ describe('AuthoritativeRoomSimulation survival phase', () => {
       .toBe(lootingDeadline + GAME.survivalDurationMs);
   });
 
-  it('does not advance out of SURVIVAL on its own, before or after the deadline', () => {
+  it('never advances out of SURVIVAL, whether the day is open or rolling into the next', () => {
     const { simulation } = survivingSimulation();
     const survivalDeadline = lootingDeadline + GAME.survivalDurationMs;
     for (const at of [lootingDeadline + 1, survivalDeadline - 1, survivalDeadline, survivalDeadline + 60_000]) {
       const result = simulation.tick(at);
       expect(result).toMatchObject({ phaseChanged: false, tallyCommitted: false, snapshotDue: false });
+      expect(simulation.snapshot(at).phase).toBe('SURVIVAL');
+    }
+    // The day that expired resolved into the next one rather than into another
+    // phase: the room is still in SURVIVAL, now on a later day and deadline.
+    expect(simulation.survivalDayNumber()).toBeGreaterThan(SURVIVAL.firstDayNumber);
+  });
+
+  it('keeps the first day\'s deadline while every household is still in it', () => {
+    const { simulation } = survivingSimulation();
+    const survivalDeadline = lootingDeadline + GAME.survivalDurationMs;
+    for (const at of [lootingDeadline + 1, lootingDeadline + 60_000, survivalDeadline - 1]) {
+      simulation.tick(at);
       expect(simulation.snapshot(at)).toMatchObject({ phase: 'SURVIVAL', phaseEndsAtMs: survivalDeadline });
+      expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber);
     }
   });
 
@@ -560,19 +574,28 @@ describe('AuthoritativeRoomSimulation survival phase', () => {
     expect(simulation.survivalReadiness()?.activePlayerCount).toBe(2);
   });
 
-  it('auto-ends remaining players at timeout and preserves manual completion', () => {
+  it('auto-ends the remaining household at timeout and resolves the day it ended', () => {
     const { simulation } = survivingSimulation();
-    const manualAt = lootingDeadline + 500;
-    simulation.endSurvivalDay('player-0', manualAt);
+    simulation.endSurvivalDay('player-0', lootingDeadline + 500);
     const timeout = lootingDeadline + GAME.survivalDurationMs;
+    // One household never pressed End Day, so only the deadline can close this
+    // day — and it does, in the tick that reaches it.
     const tick = simulation.tick(timeout);
-    expect(tick.readinessChanged).toBe(true);
-    expect(simulation.survivalReadiness()?.players).toEqual([
-      { playerId: 'player-0', hasEnded: true, endedAtMs: manualAt, endedBy: 'MANUAL' },
-      { playerId: 'player-1', hasEnded: true, endedAtMs: timeout, endedBy: 'TIMEOUT' },
-    ]);
-    expect(simulation.allPlayersEnded()).toBe(true);
-    expect(simulation.tick(timeout + 1).readinessChanged).toBe(false);
+    expect(tick).toMatchObject({ readinessChanged: true, survivalDayAdvanced: true, phaseChanged: false });
+    expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber + 1);
+    // Nobody carries an ended day into the new one, and nothing is left ended.
+    expect(simulation.allPlayersEnded()).toBe(false);
+    expect(simulation.survivalReadiness()).toMatchObject({
+      dayNumber: SURVIVAL.firstDayNumber + 1,
+      startedAtMs: timeout,
+      endsAtMs: timeout + GAME.survivalDurationMs,
+      activePlayerCount: 2,
+      allPlayersEnded: false,
+    });
+    expect(simulation.tick(timeout + 1)).toMatchObject({
+      readinessChanged: false,
+      survivalDayAdvanced: false,
+    });
   });
 
   it('sets all-players-ended as soon as the last household ends before timeout', () => {
@@ -582,9 +605,11 @@ describe('AuthoritativeRoomSimulation survival phase', () => {
     expect(last).toMatchObject({ accepted: true, changed: true, state: { allPlayersEnded: true } });
     expect(simulation.allPlayersEnded()).toBe(true);
     expect(lootingDeadline + 2_000).toBeLessThan(lootingDeadline + GAME.survivalDurationMs);
-    // Readiness is only a resolution trigger in this task; no next day is opened.
+    // The request itself resolves nothing: the day is still Day 1 until the
+    // server's own tick closes it.
     expect(simulation.snapshot(lootingDeadline + 2_000).phase).toBe('SURVIVAL');
-    expect(simulation.survivalDayNumber()).toBe(1);
+    expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber);
+    expect(simulation.survivalState()?.dayNumber).toBe(SURVIVAL.firstDayNumber);
   });
 });
 
@@ -698,12 +723,14 @@ describe('survival household initialization', () => {
     }
   });
 
-  it('commits the households once and keeps returning the same frozen object', () => {
+  it('commits the households once and keeps returning the same frozen object all day', () => {
     const { simulation } = playedDay();
     const state = simulation.survivalState();
     expect(Object.isFrozen(state)).toBe(true);
-    for (const at of [deadline + 1, deadline + GAME.survivalDurationMs, deadline + 300_000]) {
+    for (const at of [deadline + 1, deadline + 60_000, deadline + GAME.survivalDurationMs - 1]) {
       expect(simulation.tick(at).tallyCommitted).toBe(false);
+      // Only end-of-day resolution ever replaces this object, so every tick
+      // inside the open day hands back the very same households.
       expect(simulation.survivalState()).toBe(state);
     }
   });
@@ -743,11 +770,13 @@ describe('survival day number', () => {
     expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber);
   });
 
-  it('does not advance the day on its own, and never on the clients\' behalf', () => {
+  it('does not advance the day while it is still being played, nor on a client\'s word', () => {
     const simulation = openedDay();
     const state = simulation.survivalState();
-    // Well past the two-second client transition, and past the day's deadline.
-    for (const at of [lootingDeadline + 2_000, lootingDeadline + GAME.survivalDurationMs + 60_000]) {
+    // Well past the two-second client transition, and with one household having
+    // ended: a day advances only once *every* household is done with it.
+    simulation.endSurvivalDay('player-0', lootingDeadline + 1_500);
+    for (const at of [lootingDeadline + 2_000, lootingDeadline + 60_000, lootingDeadline + GAME.survivalDurationMs - 1]) {
       simulation.tick(at);
       expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber);
       expect(simulation.survivalState()).toBe(state);
@@ -767,5 +796,451 @@ describe('survival day number', () => {
       phaseEndsAtMs: endsAtMs,
     });
     expect(simulation.survivalWindow()).toEqual({ startedAtMs: lootingDeadline, endsAtMs });
+  });
+});
+
+describe('survival day resolution', () => {
+  const lootingDeadline = 2_000 + GAME.lootingDurationMs;
+  const firstDeadline = lootingDeadline + GAME.survivalDurationMs;
+  const { dailyNutritionCost, dailyHydrationCost } = SURVIVAL_CHARACTER_DEFAULTS;
+
+  /** Two players, the first survival day open and nobody finished with it. */
+  function openedDay(): AuthoritativeRoomSimulation {
+    const simulation = new AuthoritativeRoomSimulation(room(2));
+    simulation.tick(2_000);
+    simulation.tick(lootingDeadline);
+    return simulation;
+  }
+
+  /** Every household's `[nutrition, hydration]`, in household order. */
+  function resources(simulation: AuthoritativeRoomSimulation): readonly [number, number][] {
+    return (simulation.survivalState()?.households ?? []).flatMap((household) =>
+      household.characters.map((character): [number, number] => [
+        character.stats.nutrition.current,
+        character.stats.hydration.current,
+      ]));
+  }
+
+  it('resolves the day and opens the next one once every household has ended', () => {
+    const simulation = openedDay();
+    const endedAt = lootingDeadline + 30_000;
+    simulation.endSurvivalDay('player-0', endedAt);
+    simulation.endSurvivalDay('player-1', endedAt);
+
+    const tick = simulation.tick(endedAt);
+    expect(tick).toMatchObject({
+      survivalDayAdvanced: true,
+      readinessChanged: true,
+      phaseChanged: false,
+      tallyCommitted: false,
+    });
+    expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber + 1);
+    expect(simulation.survivalState()).toMatchObject({
+      dayNumber: SURVIVAL.firstDayNumber + 1,
+      startedAtMs: endedAt,
+    });
+    // Ending early opens the next day early: the new window is a full 120
+    // seconds measured from the moment the last household finished.
+    expect(simulation.survivalWindow()).toEqual({
+      startedAtMs: endedAt,
+      endsAtMs: endedAt + GAME.survivalDurationMs,
+    });
+    expect(simulation.snapshot(endedAt)).toMatchObject({
+      phase: 'SURVIVAL',
+      phaseEndsAtMs: endedAt + GAME.survivalDurationMs,
+    });
+  });
+
+  it('spends one day of Nutrition and Hydration, once, for every character', () => {
+    const simulation = openedDay();
+    const full = 100 - 0;
+    expect(resources(simulation)).toEqual([[full, full], [full, full]]);
+
+    simulation.endSurvivalDay('player-0', lootingDeadline + 1);
+    simulation.endSurvivalDay('player-1', lootingDeadline + 1);
+    simulation.tick(lootingDeadline + 1);
+
+    const drained: [number, number] = [full - dailyNutritionCost, full - dailyHydrationCost];
+    expect(resources(simulation)).toEqual([drained, drained]);
+    expect(dailyNutritionCost).toBeGreaterThan(0);
+    expect(dailyHydrationCost).toBeGreaterThan(0);
+  });
+
+  it('resolves a day exactly once, however many ticks observe it ended', () => {
+    const simulation = openedDay();
+    simulation.endSurvivalDay('player-0', lootingDeadline + 5_000);
+    simulation.endSurvivalDay('player-1', lootingDeadline + 5_000);
+    expect(simulation.tick(lootingDeadline + 5_000).survivalDayAdvanced).toBe(true);
+    const afterOneDay = resources(simulation);
+    const dayTwo = simulation.survivalState();
+
+    // The next day is open and unfinished, so nothing resolves again — not on
+    // the same millisecond, and not on any tick that follows.
+    for (const at of [lootingDeadline + 5_000, lootingDeadline + 5_001, lootingDeadline + 20_000]) {
+      expect(simulation.tick(at).survivalDayAdvanced).toBe(false);
+      expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber + 1);
+      expect(simulation.survivalState()).toBe(dayTwo);
+      expect(resources(simulation)).toEqual(afterOneDay);
+    }
+  });
+
+  it('resolves a timed-out day on its authoritative deadline, not on a late tick', () => {
+    const simulation = openedDay();
+    // A delayed timer callback: the day it closes still ended at 120 seconds,
+    // so the next day starts there rather than being handed the lost time.
+    expect(simulation.tick(firstDeadline + 5_000).survivalDayAdvanced).toBe(true);
+    expect(simulation.survivalState()?.startedAtMs).toBe(firstDeadline);
+    expect(simulation.survivalWindow()).toEqual({
+      startedAtMs: firstDeadline,
+      endsAtMs: firstDeadline + GAME.survivalDurationMs,
+    });
+    expect(simulation.survivalReadiness()).toMatchObject({
+      dayNumber: SURVIVAL.firstDayNumber + 1,
+      startedAtMs: firstDeadline,
+      endsAtMs: firstDeadline + GAME.survivalDurationMs,
+    });
+  });
+
+  it('resets End Day readiness so every household can play the new day', () => {
+    const simulation = openedDay();
+    const endedAt = lootingDeadline + 10_000;
+    simulation.endSurvivalDay('player-0', endedAt);
+    simulation.endSurvivalDay('player-1', endedAt);
+    expect(simulation.canPerformSurvivalDayActions('player-0', endedAt)).toBe(false);
+
+    simulation.tick(endedAt);
+    expect(simulation.survivalReadiness()?.players).toEqual([
+      { playerId: 'player-0', hasEnded: false, endedAtMs: null, endedBy: null },
+      { playerId: 'player-1', hasEnded: false, endedAtMs: null, endedBy: null },
+    ]);
+    expect(simulation.allPlayersEnded()).toBe(false);
+    // The households that just ended a day may act in the new one, and ending
+    // it again is what resolves the day after.
+    expect(simulation.canPerformSurvivalDayActions('player-0', endedAt + 1)).toBe(true);
+    expect(simulation.canPerformSurvivalDayActions('player-1', endedAt + 1)).toBe(true);
+    expect(simulation.endSurvivalDay('player-0', endedAt + 1))
+      .toMatchObject({ accepted: true, changed: true, state: { dayNumber: 2 } });
+  });
+
+  it('drains one day per resolved day across consecutive timed-out days', () => {
+    const simulation = openedDay();
+    simulation.tick(firstDeadline);
+    const secondDeadline = firstDeadline + GAME.survivalDurationMs;
+    simulation.tick(secondDeadline);
+
+    expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber + 2);
+    const twiceDrained: [number, number] = [
+      100 - dailyNutritionCost * 2,
+      100 - dailyHydrationCost * 2,
+    ];
+    expect(resources(simulation)).toEqual([twiceDrained, twiceDrained]);
+    expect(simulation.survivalState()?.startedAtMs).toBe(secondDeadline);
+  });
+
+  it('keeps every household, recruit, inventory line, and untouched stat', () => {
+    const base = room(2);
+    base.players[0]!.position = { x: 900, y: 600 };
+    const simulation = new AuthoritativeRoomSimulation(base, {
+      spawns: [{ id: 'loot-soup', catalogId: 'canned-soup', x: 900, y: 600 }],
+      npcSpawns: [{ id: 'npc-maya', catalogId: 'maya', x: 900, y: 600 }],
+      carts: [
+        { id: 'cart-0', slot: 0, label: 'Cart 1', x: 900, y: 600, width: 128, height: 72 },
+        { id: 'cart-1', slot: 1, label: 'Cart 2', x: 1_100, y: 600, width: 128, height: 72 },
+      ],
+      collision: [],
+    });
+    simulation.tick(2_000);
+    let requestId = 900;
+    const interact = (action: 'PICK_UP' | 'DROP_OFF', targetId: string, atMs: number) =>
+      simulation.resolveInteraction('player-0', {
+        requestId: `00000000-0000-4000-8000-${String(requestId += 1).padStart(12, '0')}`,
+        action,
+        targetId,
+      }, atMs).result.outcome;
+    // The soup becomes inventory and Maya becomes a household member, so the
+    // resolved day has both kinds of thing to carry forward.
+    expect(interact('PICK_UP', 'loot-soup', 2_001)).toBe('PICKED_UP');
+    expect(interact('DROP_OFF', 'cart-0', 2_001)).toBe('DEPOSITED');
+    expect(interact('PICK_UP', 'npc-maya', 2_002)).toBe('PICKED_UP');
+    expect(interact('DROP_OFF', 'cart-0', 2_002)).toBe('DEPOSITED');
+    simulation.tick(lootingDeadline);
+    const dayOne = simulation.survivalState();
+    expect(dayOne?.households[0]?.characters).toHaveLength(2);
+
+    simulation.tick(firstDeadline);
+    const dayTwo = simulation.survivalState();
+    expect(dayTwo?.stateId).toBe(dayOne?.stateId);
+    expect(dayTwo?.households.map((household) => household.playerId))
+      .toEqual(dayOne?.households.map((household) => household.playerId));
+    // Maya is still a household member, the soup is still deposited inventory,
+    // and only the two resources a day costs have moved.
+    expect(dayTwo?.households[0]?.characters.map((character) => character.displayName))
+      .toEqual(['Player 0', 'Maya']);
+    expect(dayTwo?.households[0]?.inventory).toEqual(dayOne?.households[0]?.inventory);
+    for (const character of dayTwo?.households.flatMap((household) => household.characters) ?? []) {
+      expect(character.stats).toMatchObject({
+        health: SURVIVAL_CHARACTER_DEFAULTS.stats.health,
+        survival: SURVIVAL_CHARACTER_DEFAULTS.stats.survival,
+        morale: SURVIVAL_CHARACTER_DEFAULTS.stats.morale,
+        strength: SURVIVAL_CHARACTER_DEFAULTS.stats.strength,
+      });
+      // Nobody dies of a resolved day in this model, only of the coming rolls.
+      expect(character.isAlive).toBe(true);
+    }
+  });
+
+  it('resolves nothing while the room has never reached a survival day', () => {
+    const simulation = new AuthoritativeRoomSimulation(room(2));
+    for (const at of [1_500, 2_000, lootingDeadline - 1]) {
+      expect(simulation.tick(at).survivalDayAdvanced).toBe(false);
+    }
+    // The buzzer opens Day 1; it does not also resolve it.
+    expect(simulation.tick(lootingDeadline)).toMatchObject({
+      survivalDayAdvanced: false,
+      tallyCommitted: true,
+    });
+    expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber);
+  });
+});
+
+describe('survival feeding', () => {
+  const lootingDeadline = 2_000 + GAME.lootingDurationMs;
+  const NUTRITION_COST = SURVIVAL_CHARACTER_DEFAULTS.dailyNutritionCost;
+  const HYDRATION_COST = SURVIVAL_CHARACTER_DEFAULTS.dailyHydrationCost;
+
+  let feedCounter = 900;
+  function feedRequest(itemId: string, characterId: string): SurvivalConsumeRequest {
+    feedCounter += 1;
+    return {
+      requestId: `00000000-0000-4000-8000-${String(feedCounter).padStart(12, '0')}`,
+      itemId,
+      characterId,
+    };
+  }
+
+  let bankCounter = 700;
+  function bank(
+    simulation: AuthoritativeRoomSimulation,
+    playerId: string,
+    targetIds: readonly string[],
+    cartId: string,
+    atMs: number,
+  ): void {
+    for (const targetId of targetIds) {
+      const pickUp = simulation.resolveInteraction(playerId, {
+        requestId: `00000000-0000-4000-8000-${String(bankCounter += 1).padStart(12, '0')}`,
+        action: 'PICK_UP',
+        targetId,
+      }, atMs);
+      expect(pickUp.result.outcome).toBe('PICKED_UP');
+    }
+    const deposit = simulation.resolveInteraction(playerId, {
+      requestId: `00000000-0000-4000-8000-${String(bankCounter += 1).padStart(12, '0')}`,
+      action: 'DROP_OFF',
+      targetId: cartId,
+    }, atMs);
+    expect(deposit.result.outcome).toBe('DEPOSITED');
+  }
+
+  /**
+   * Two households that reach Day 1 with real deposited inventory: player 0
+   * banks a soup, a water, a meal, and a pistol, and player 1 banks a soup of
+   * their own. Everything is placed within reach of a standing player, the same
+   * seam the household initialization tests use.
+   */
+  function fedSimulation(): AuthoritativeRoomSimulation {
+    const base = room(2);
+    base.players[0]!.position = { x: 900, y: 600 };
+    base.players[1]!.position = { x: 1_100, y: 600 };
+    const simulation = new AuthoritativeRoomSimulation(base, {
+      spawns: [
+        { id: 'loot-soup', catalogId: 'canned-soup', x: 900, y: 600 },
+        { id: 'loot-water', catalogId: 'bottled-water', x: 900, y: 600 },
+        { id: 'loot-mre', catalogId: 'microwave-meal', x: 900, y: 600 },
+        { id: 'loot-pistol', catalogId: 'pistol', x: 900, y: 600 },
+        { id: 'loot-their-soup', catalogId: 'canned-soup', x: 1_100, y: 600 },
+      ],
+      npcSpawns: [],
+      carts: [
+        { id: 'cart-0', slot: 0, label: 'Cart 1', x: 900, y: 600, width: 128, height: 72 },
+        { id: 'cart-1', slot: 1, label: 'Cart 2', x: 1_100, y: 600, width: 128, height: 72 },
+      ],
+      collision: [],
+    });
+    simulation.tick(2_000);
+    bank(simulation, 'player-0', ['loot-soup', 'loot-water', 'loot-mre', 'loot-pistol'], 'cart-0', 2_001);
+    bank(simulation, 'player-1', ['loot-their-soup'], 'cart-1', 2_002);
+    simulation.tick(lootingDeadline);
+    return simulation;
+  }
+
+  /** Closes the open day for both households and opens the next one. */
+  function passDay(simulation: AuthoritativeRoomSimulation, atMs: number): void {
+    for (const playerId of ['player-0', 'player-1']) {
+      expect(simulation.endSurvivalDay(playerId, atMs).accepted).toBe(true);
+    }
+    expect(simulation.tick(atMs).survivalDayAdvanced).toBe(true);
+  }
+
+  function characterIn(simulation: AuthoritativeRoomSimulation, playerId: string) {
+    return simulation.survivalState()!.households
+      .find((household) => household.playerId === playerId)!.characters[0]!;
+  }
+
+  function inventoryIds(simulation: AuthoritativeRoomSimulation, playerId: string): string[] {
+    return simulation.survivalState()!.households
+      .find((household) => household.playerId === playerId)!.inventory.map((item) => item.id);
+  }
+
+  it('restores 50 Nutrition to a household\'s own character and spends the item', () => {
+    const simulation = fedSimulation();
+    // Three resolved days of the shared daily cost, so there is real room to
+    // restore rather than a full character the soup would simply top up.
+    let dayStartMs = lootingDeadline;
+    for (let day = 0; day < 3; day += 1) {
+      dayStartMs += 1_000;
+      passDay(simulation, dayStartMs);
+    }
+    const before = characterIn(simulation, 'player-0');
+    expect(before.stats.nutrition).toEqual({ current: 100 - 3 * NUTRITION_COST, max: 100 });
+
+    const resolution = simulation.resolveSurvivalConsumption(
+      'player-0',
+      feedRequest('loot-soup', 'player-0'),
+      dayStartMs + 500,
+    );
+    expect(resolution.result.outcome).toBe('CONSUMED');
+    const after = characterIn(simulation, 'player-0');
+    expect(after.stats.nutrition).toEqual({ current: before.stats.nutrition.current + 50, max: 100 });
+    // Soup is food, not drink: the day's hydration loss is still there.
+    expect(after.stats.hydration).toEqual({ current: 100 - 3 * HYDRATION_COST, max: 100 });
+    // The committed day is replaced, and the eaten tin is gone from it.
+    expect(inventoryIds(simulation, 'player-0')).toEqual(['loot-water', 'loot-mre', 'loot-pistol']);
+    expect(simulation.survivalState()).toBe(resolution.state);
+  });
+
+  it('restores 50 Hydration from water and fills both stats from a microwave meal', () => {
+    const simulation = fedSimulation();
+    let dayStartMs = lootingDeadline;
+    for (let day = 0; day < 3; day += 1) {
+      dayStartMs += 1_000;
+      passDay(simulation, dayStartMs);
+    }
+    const drained = characterIn(simulation, 'player-0').stats;
+
+    expect(simulation.resolveSurvivalConsumption(
+      'player-0', feedRequest('loot-water', 'player-0'), dayStartMs + 100,
+    ).result.outcome).toBe('CONSUMED');
+    expect(characterIn(simulation, 'player-0').stats.hydration)
+      .toEqual({ current: drained.hydration.current + 50, max: 100 });
+    expect(characterIn(simulation, 'player-0').stats.nutrition).toEqual(drained.nutrition);
+
+    // The meal ignores how empty either stat is and tops both up to this
+    // character's own maximums.
+    expect(simulation.resolveSurvivalConsumption(
+      'player-0', feedRequest('loot-mre', 'player-0'), dayStartMs + 200,
+    ).result.outcome).toBe('CONSUMED');
+    expect(characterIn(simulation, 'player-0').stats.nutrition).toEqual({ current: 100, max: 100 });
+    expect(characterIn(simulation, 'player-0').stats.hydration).toEqual({ current: 100, max: 100 });
+    expect(inventoryIds(simulation, 'player-0')).toEqual(['loot-soup', 'loot-pistol']);
+  });
+
+  it('refuses a pistol, an item nobody deposited, and a person who is not in the household', () => {
+    const simulation = fedSimulation();
+    const at = lootingDeadline + 1_000;
+    for (const [request, reason] of [
+      [feedRequest('loot-pistol', 'player-0'), 'NOT_CONSUMABLE'],
+      [feedRequest('loot-nothing', 'player-0'), 'UNKNOWN_ITEM'],
+      [feedRequest('loot-soup', 'nobody'), 'UNKNOWN_CHARACTER'],
+    ] as const) {
+      const resolution = simulation.resolveSurvivalConsumption('player-0', request, at);
+      expect(resolution.result).toMatchObject({ outcome: 'REJECTED', reason });
+      expect(resolution.state).toBeNull();
+    }
+    // Every rejection left the household exactly as the buzzer built it.
+    expect(inventoryIds(simulation, 'player-0'))
+      .toEqual(['loot-soup', 'loot-water', 'loot-mre', 'loot-pistol']);
+    expect(characterIn(simulation, 'player-0').stats)
+      .toEqual(SURVIVAL_CHARACTER_DEFAULTS.stats);
+  });
+
+  it('refuses another household\'s character and another household\'s item', () => {
+    const simulation = fedSimulation();
+    const at = lootingDeadline + 1_000;
+    const committed = simulation.survivalState();
+
+    // Their character is not in my household, and their soup is not in my
+    // inventory. Neither is reachable, and neither costs me anything.
+    expect(simulation.resolveSurvivalConsumption(
+      'player-0', feedRequest('loot-soup', 'player-1'), at,
+    ).result).toMatchObject({ outcome: 'REJECTED', reason: 'UNKNOWN_CHARACTER' });
+    expect(simulation.resolveSurvivalConsumption(
+      'player-0', feedRequest('loot-their-soup', 'player-0'), at,
+    ).result).toMatchObject({ outcome: 'REJECTED', reason: 'UNKNOWN_ITEM' });
+    // A socket that is in no household at all owns nothing to feed with.
+    expect(simulation.resolveSurvivalConsumption(
+      'player-9', feedRequest('loot-soup', 'player-0'), at,
+    ).result).toMatchObject({ outcome: 'REJECTED', reason: 'NO_HOUSEHOLD' });
+
+    expect(simulation.survivalState()).toBe(committed);
+    expect(inventoryIds(simulation, 'player-1')).toEqual(['loot-their-soup']);
+  });
+
+  it('closes feeding once that household has ended its day, for it alone', () => {
+    const simulation = fedSimulation();
+    const at = lootingDeadline + 1_000;
+    expect(simulation.endSurvivalDay('player-0', at).accepted).toBe(true);
+
+    const refused = simulation.resolveSurvivalConsumption(
+      'player-0', feedRequest('loot-soup', 'player-0'), at + 1,
+    );
+    expect(refused.result).toMatchObject({ outcome: 'REJECTED', reason: 'DAY_ALREADY_ENDED' });
+    expect(refused.state).toBeNull();
+    expect(inventoryIds(simulation, 'player-0'))
+      .toEqual(['loot-soup', 'loot-water', 'loot-mre', 'loot-pistol']);
+    // The household that has not ended its day is unaffected by the one that has.
+    expect(simulation.resolveSurvivalConsumption(
+      'player-1', feedRequest('loot-their-soup', 'player-1'), at + 2,
+    ).result.outcome).toBe('CONSUMED');
+    expect(inventoryIds(simulation, 'player-1')).toEqual([]);
+  });
+
+  it('closes feeding outside an open survival day', () => {
+    const base = room(2);
+    const simulation = new AuthoritativeRoomSimulation(base);
+    // Before the buzzer there is no day and nothing to feed from.
+    expect(simulation.resolveSurvivalConsumption(
+      'player-0', feedRequest('loot-soup', 'player-0'), 2_500,
+    ).result).toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
+
+    const opened = fedSimulation();
+    // Past the deadline the day is over even though the tick that resolves it
+    // has not run yet, so nobody sneaks a meal into a closed day.
+    expect(opened.resolveSurvivalConsumption(
+      'player-0',
+      feedRequest('loot-soup', 'player-0'),
+      lootingDeadline + GAME.survivalDurationMs,
+    ).result).toMatchObject({ outcome: 'REJECTED', reason: 'INVALID_PHASE' });
+    expect(inventoryIds(opened, 'player-0'))
+      .toEqual(['loot-soup', 'loot-water', 'loot-mre', 'loot-pistol']);
+  });
+
+  it('replays a duplicate request across the day rollover without eating twice', () => {
+    const simulation = fedSimulation();
+    const request = feedRequest('loot-soup', 'player-0');
+    const first = simulation.resolveSurvivalConsumption('player-0', request, lootingDeadline + 500);
+    expect(first.result.outcome).toBe('CONSUMED');
+    expect(inventoryIds(simulation, 'player-0')).toEqual(['loot-water', 'loot-mre', 'loot-pistol']);
+
+    passDay(simulation, lootingDeadline + 1_000);
+    const dayTwo = simulation.survivalState();
+    // A retry delivered a whole day later is still the feed it was: it reports
+    // the original decision, opens no second tin, and replaces no state.
+    const repeated = simulation.resolveSurvivalConsumption(
+      'player-0', request, lootingDeadline + 1_500,
+    );
+    expect(repeated).toEqual({ result: first.result, state: null, replayed: true });
+    expect(simulation.survivalState()).toBe(dayTwo);
+    expect(inventoryIds(simulation, 'player-0')).toEqual(['loot-water', 'loot-mre', 'loot-pistol']);
   });
 });

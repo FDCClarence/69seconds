@@ -11,6 +11,8 @@ import {
   serverErrorSchema,
   shoveRequestSchema,
   shoveResultSchema,
+  survivalConsumeRequestSchema,
+  survivalConsumeResultSchema,
   survivalEndDayRequestSchema,
   survivalEndDayResultSchema,
   type ClientToServerEvents,
@@ -25,6 +27,8 @@ import {
   type ServerError,
   type ServerToClientEvents,
   type SocketData,
+  type SurvivalConsumeRejectionReason,
+  type SurvivalConsumeResult,
   type SurvivalEndDayResult,
   NETWORK,
 } from '@69-seconds/shared';
@@ -36,6 +40,7 @@ import { digestSessionToken, type AuthService } from './auth/service.js';
 import { REJECTION_MESSAGES, type LootAuthorityOptions } from './game/loot-authority.js';
 import { AuthoritativeRoomSimulation } from './game/simulation.js';
 import { SHOVE_REJECTION_MESSAGES, type ShoveAuthorityOptions } from './game/shove-authority.js';
+import { SURVIVAL_CONSUME_REJECTION_MESSAGES } from './game/survival-consumption.js';
 import { RoomRegistry, RoomRegistryError, type RoomRegistryOptions } from './rooms/registry.js';
 
 type GameServer = Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>;
@@ -137,6 +142,19 @@ function shoveRejection(requestId: string, reason: ShoveRejectionReason): ShoveR
   });
 }
 
+/**
+ * Transport-level feeding rejection, used before a simulation is ever consulted.
+ * Nothing is restated alongside it, because nothing changed.
+ */
+function consumeRejection(requestId: string, reason: SurvivalConsumeRejectionReason): SurvivalConsumeResult {
+  return survivalConsumeResultSchema.parse({
+    outcome: 'REJECTED',
+    requestId,
+    reason,
+    message: SURVIVAL_CONSUME_REJECTION_MESSAGES[reason],
+  });
+}
+
 const FALLBACK_REQUEST_ID = '00000000-0000-4000-8000-000000000000';
 
 function requestIdFrom(payload: unknown): string {
@@ -216,7 +234,8 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
     const serverNowMs = now();
     for (const simulation of simulations.values()) {
       const result = simulation.tick(serverNowMs);
-      if (!result.snapshotDue && !result.phaseChanged && !result.readinessChanged) continue;
+      if (!result.snapshotDue && !result.phaseChanged && !result.readinessChanged
+        && !result.survivalDayAdvanced) continue;
       const snapshot = simulation.snapshot(serverNowMs);
       const room = rooms.applySimulationSnapshot(snapshot);
       if (!room) {
@@ -230,7 +249,12 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       if (result.tallyCommitted) {
         const tally = simulation.tally();
         if (tally) io.to(simulation.roomCode).emit('match:tally', tally);
-        // After the looting result, because the households are derived from it.
+      }
+      // The households and their readiness travel together whenever either the
+      // buzzer produced them or end-of-day resolution replaced them with the
+      // next day's. Sent after the looting result, because the first day's
+      // households are derived from it.
+      if (result.tallyCommitted || result.survivalDayAdvanced) {
         const survivalState = simulation.survivalState();
         if (survivalState) io.to(simulation.roomCode).emit('survival:state', survivalState);
         const readiness = simulation.survivalReadiness();
@@ -347,6 +371,8 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
         acknowledge?.(interactionRejection(requestIdFrom(payload), 'RATE_LIMITED'));
       } else if (event === 'shove:request') {
         acknowledge?.(shoveRejection(requestIdFrom(payload), 'RATE_LIMITED'));
+      } else if (event === 'survival:consume') {
+        acknowledge?.(consumeRejection(requestIdFrom(payload), 'RATE_LIMITED'));
       } else if (event !== 'input:update') {
         acknowledge?.(roomCommandResultSchema.parse({
           ok: false,
@@ -545,6 +571,27 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       acknowledge?.(survivalEndDayResultSchema.parse({ ok: true, readiness: resolution.state }));
       // An idempotent replay receives the current state but creates no duplicate broadcast.
       if (resolution.changed) io.to(code).emit('survival:readiness', resolution.state);
+    });
+
+    socket.on('survival:consume', (payload, acknowledge) => {
+      const parsed = survivalConsumeRequestSchema.safeParse(payload);
+      if (!parsed.success) {
+        reportInvalidGameplayPayload(socket, 'survival:consume');
+        acknowledge?.(consumeRejection(requestIdFrom(payload), 'INVALID_PAYLOAD'));
+        return;
+      }
+      const code = rooms.roomForPlayer(playerId);
+      const simulation = code ? simulations.get(code) : undefined;
+      if (!code || !simulation) {
+        acknowledge?.(consumeRejection(parsed.data.requestId, code ? 'INVALID_PHASE' : 'NOT_IN_MATCH'));
+        return;
+      }
+      const resolution = simulation.resolveSurvivalConsumption(playerId, parsed.data, now());
+      acknowledge?.(resolution.result);
+      // A replayed request ID reports its original decision, spends nothing, and
+      // broadcasts nothing. Only a state the server actually replaced is sent,
+      // and it goes to the room because households are already public.
+      if (resolution.state) io.to(code).emit('survival:state', resolution.state);
     });
 
     socket.on('disconnect', () => {

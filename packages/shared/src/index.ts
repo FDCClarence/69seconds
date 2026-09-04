@@ -10,4 +10,7 @@ export * from './npc-table.js';
 export * from './rules.js';
 export * from './schemas.js';
 export * from './survival.js';
+export * from './survival-consumable-table.js';
+export * from './survival-consumption.js';
+export * from './survival-resolution.js';
 export * from './survival-table.js';

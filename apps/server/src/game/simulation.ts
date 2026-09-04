@@ -11,6 +11,7 @@ import {
   movementAxis,
   normalizeMovementVector,
   resolveSprint,
+  resolveSurvivalDay,
   simulatePlayerMovement,
   type ClientInput,
   type GamePhase,
@@ -22,6 +23,7 @@ import {
   type RoomPublicState,
   type ShoveRequest,
   type SprintState,
+  type SurvivalConsumeRequest,
   type SurvivalState,
   type SurvivalReadinessState,
   type Vector2,
@@ -32,6 +34,10 @@ import {
   type ShoveAuthorityOptions,
   type ShoveResolution,
 } from './shove-authority.js';
+import {
+  SurvivalConsumptionAuthority,
+  type SurvivalConsumptionResolution,
+} from './survival-consumption.js';
 import { SurvivalReadinessAuthority } from './survival-readiness.js';
 
 const IDLE_MOVEMENT = { up: false, down: false, left: false, right: false } as const;
@@ -71,6 +77,11 @@ export interface SimulationTickResult {
   tallyCommitted: boolean;
   snapshotDue: boolean;
   readinessChanged: boolean;
+  /**
+   * A survival day resolved and the next one opened, so the committed
+   * households changed as well as the readiness that tracks them.
+   */
+  survivalDayAdvanced: boolean;
 }
 
 export type EndSurvivalDayResolution =
@@ -94,16 +105,25 @@ export class AuthoritativeRoomSimulation {
    * the buzzer opens is `SURVIVAL.firstDayNumber`.
    *
    * It lives here, beside the phase and the deadline, because advancing the day
-   * is a server decision: the coming end-of-day flow increments this field and
-   * rebuilds the committed state from it. No client message reaches it, and no
-   * client counts days of its own — every client renders the number the
-   * committed state carries.
+   * is a server decision: end-of-day resolution moves this field and the
+   * committed state together. No client message reaches it, and no client counts
+   * days of its own — every client renders the number the committed state
+   * carries.
    */
-  private survivalDay = SURVIVAL.firstDayNumber;
+  private survivalDay: number = SURVIVAL.firstDayNumber;
+  /**
+   * The last day this room resolved, so resolution is provably once per day.
+   * Resetting readiness already makes a second attempt impossible — every
+   * household is active again the instant the next day opens — but the ledger
+   * says so outright rather than leaving it to be re-derived.
+   */
+  private lastResolvedSurvivalDay: number | null = null;
   private committedTally: MatchTally | null = null;
   /** One household per player, produced at the buzzer; null until then. */
   private committedSurvivalState: SurvivalState | null = null;
   private readiness: SurvivalReadinessAuthority | null = null;
+  /** Owns the committed feeding ledger, which outlives any single day. */
+  private readonly consumption = new SurvivalConsumptionAuthority();
   private snapshotSequence = 0;
   private snapshotAccumulatorSeconds = 0;
 
@@ -184,6 +204,7 @@ export class AuthoritativeRoomSimulation {
   removePlayer(playerId: string): LootUpdate | null {
     this.players.delete(playerId);
     this.shoves.removePlayer(playerId);
+    this.consumption.forgetPlayer(playerId);
     return this.loot.removePlayer(playerId);
   }
 
@@ -284,6 +305,12 @@ export class AuthoritativeRoomSimulation {
       && (this.readiness?.canPerformDayActions(playerId, serverNowMs) ?? false);
   }
 
+  /**
+   * Records one household's End Day. It never resolves the day itself, even when
+   * it is the last household to finish: resolution belongs to the tick that
+   * follows, so a day is always closed by the server clock rather than inside
+   * the request of whichever player happened to press the button last.
+   */
   endSurvivalDay(playerId: string, serverNowMs: number): EndSurvivalDayResolution {
     if (this.phase !== 'SURVIVAL' || !this.readiness) {
       return { accepted: false, reason: 'INVALID_PHASE' };
@@ -296,16 +323,45 @@ export class AuthoritativeRoomSimulation {
   }
 
   /**
+   * Feeds one character one item out of the requesting household's own
+   * inventory, and commits the result.
+   *
+   * The room supplies only the two things the shared engine cannot know — the
+   * live day and whether this household may still act on it — and takes back a
+   * whole new committed state. Every other restriction is the engine's, so
+   * ownership, edibility, and the personal stat maxima are decided in one place
+   * rather than being re-checked here. A rejected request changes nothing.
+   */
+  resolveSurvivalConsumption(
+    playerId: string,
+    request: SurvivalConsumeRequest,
+    serverNowMs: number,
+  ): SurvivalConsumptionResolution {
+    const resolution = this.consumption.resolve({
+      playerId,
+      request,
+      // Only an open survival day has a state to feed from; outside it there is
+      // nothing to consume rather than something guarded.
+      state: this.phase === 'SURVIVAL' ? this.committedSurvivalState : null,
+      dayActionStatus: this.readiness?.dayActionStatus(playerId, serverNowMs) ?? 'NOT_A_HOUSEHOLD',
+    });
+    // The committed day only ever moves forward on a decision that succeeded.
+    if (resolution.state) this.committedSurvivalState = resolution.state;
+    return resolution;
+  }
+
+  /**
    * The authoritative survival day. It reads `SURVIVAL.firstDayNumber` before
-   * and during the first day; only the server ever moves it.
+   * and during the first day, and only end-of-day resolution ever moves it.
    */
   survivalDayNumber(): number {
     return this.survivalDay;
   }
 
   /**
-   * The server-owned survival window, exposed for the end-of-day rule that will
-   * read it. Null outside `SURVIVAL`; a client never supplies either value.
+   * The currently open survival day's window, which end-of-day resolution
+   * replaces with the next day's. Null outside `SURVIVAL`; a client never
+   * supplies either value.
    */
   survivalWindow(): { startedAtMs: number; endsAtMs: number } | null {
     if (this.phase !== 'SURVIVAL' || this.survivalStartedAtMs === null || this.phaseEndsAtMs === null) {
@@ -314,10 +370,57 @@ export class AuthoritativeRoomSimulation {
     return { startedAtMs: this.survivalStartedAtMs, endsAtMs: this.phaseEndsAtMs };
   }
 
+  /**
+   * Resolves the open survival day, exactly once, on the first tick that finds
+   * every household finished with it — whether they all pressed End Day or the
+   * 120-second deadline ended it for the stragglers.
+   *
+   * Resolution is one atomic step: the day's resource drain, the incremented
+   * day number, a fresh authoritative window, and readiness reset for everybody
+   * all land together, so no client ever observes a day that is over but
+   * unresolved. The phase deliberately stays `SURVIVAL` — the next day is the
+   * same phase, freshly opened, not a new one.
+   *
+   * Returns true only when it actually advanced the day.
+   */
+  private resolveSurvivalDayIfEnded(serverNowMs: number): boolean {
+    if (!this.readiness || !this.committedSurvivalState) return false;
+    if (!this.readiness.allPlayersEnded()) return false;
+    if (this.lastResolvedSurvivalDay === this.survivalDay) return false;
+    const startedAtMs = this.committedSurvivalState.startedAtMs;
+    const deadlineMs = startedAtMs + GAME.survivalDurationMs;
+    // The earlier of now and the deadline, and never before the day opened:
+    // ending early opens the next day early, while a late timer callback closes
+    // the day it was supposed to close instead of stretching it — the same rule
+    // the looting and countdown boundaries follow.
+    const resolvedAtMs = Math.min(Math.max(Math.floor(serverNowMs), startedAtMs), deadlineMs);
+    this.lastResolvedSurvivalDay = this.survivalDay;
+    // Resolved from the committed state rather than rebuilt from the looting
+    // result: the new day inherits the characters, inventories, and every stat
+    // the households actually reached, with only the daily costs spent.
+    this.committedSurvivalState = resolveSurvivalDay({
+      state: this.committedSurvivalState,
+      resolvedAtMs,
+    });
+    // The engine owns the increment; the room follows its state rather than
+    // counting a day of its own, so the two can never disagree.
+    this.survivalDay = this.committedSurvivalState.dayNumber;
+    this.survivalStartedAtMs = resolvedAtMs;
+    this.phaseEndsAtMs = resolvedAtMs + GAME.survivalDurationMs;
+    this.readiness.resetForDay({
+      roomCode: this.roomCode,
+      dayNumber: this.survivalDay,
+      startedAtMs: resolvedAtMs,
+      playerIds: this.committedSurvivalState.households.map((household) => household.playerId),
+    });
+    return true;
+  }
+
   tick(serverNowMs: number): SimulationTickResult {
     let phaseChanged = false;
     let tallyCommitted = false;
     let readinessChanged = false;
+    let survivalDayAdvanced = false;
     if (this.phase === 'COUNTDOWN' && this.phaseEndsAtMs !== null && serverNowMs >= this.phaseEndsAtMs) {
       const lootingStartedAtMs = this.phaseEndsAtMs;
       this.phase = 'LOOTING';
@@ -361,10 +464,15 @@ export class AuthoritativeRoomSimulation {
       tallyCommitted = true;
     }
 
-    // Readiness ends at the deadline, but the phase does not advance: the next
-    // task can hook resolution directly onto `allPlayersEnded()`.
+    // Readiness ends at the deadline, and a fully ended day resolves in the same
+    // tick that observes it. Both halves run off the server clock, so a day
+    // resolves whether the last household pressed End Day or never did, and no
+    // client message can bring a day to an end or hold one open.
     if (this.phase === 'SURVIVAL' && this.readiness) {
       readinessChanged = this.readiness.endExpiredPlayers(serverNowMs).changed;
+      survivalDayAdvanced = this.resolveSurvivalDayIfEnded(serverNowMs);
+      // The day it advanced to carries fresh readiness for every household.
+      if (survivalDayAdvanced) readinessChanged = true;
     }
 
     const movementAllowed = this.phase === 'LOOTING'
@@ -424,7 +532,7 @@ export class AuthoritativeRoomSimulation {
     const snapshotDue = this.phase !== 'SURVIVAL' && this.phase !== 'TALLY'
       && this.snapshotAccumulatorSeconds + Number.EPSILON >= snapshotInterval;
     if (snapshotDue) this.snapshotAccumulatorSeconds -= snapshotInterval;
-    return { phaseChanged, tallyCommitted, snapshotDue, readinessChanged };
+    return { phaseChanged, tallyCommitted, snapshotDue, readinessChanged, survivalDayAdvanced };
   }
 
   snapshot(serverNowMs: number): GameSnapshot {

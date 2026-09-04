@@ -28,6 +28,12 @@ export const GAME = {
  */
 export const SURVIVAL = {
   firstDayNumber: 1,
+  /**
+   * Committed feeding decisions remembered per household, so a resent request
+   * ID replays its original decision instead of spending a second item. Larger
+   * than the number of items one household could possibly eat in a match.
+   */
+  consumptionHistorySize: 256,
 } as const;
 
 export const ROOM_CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';

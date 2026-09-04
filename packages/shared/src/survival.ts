@@ -9,6 +9,7 @@ import {
   type SurvivalStatOverride,
 } from './survival-table.js';
 import { SURVIVAL } from './constants.js';
+import { deepFreezeSurvivalState } from './survival-freeze.js';
 import { survivalStateSchema } from './schemas.js';
 import type {
   MatchTally,
@@ -225,20 +226,4 @@ function assertBalanceNumber(value: number, characterId: string, field: string):
     throw new Error(`Survival character ${characterId} has an out-of-range ${field}: ${value}`);
   }
   return value;
-}
-
-function deepFreezeSurvivalState(state: SurvivalState): SurvivalState {
-  for (const household of state.households) {
-    for (const character of household.characters) {
-      for (const key of SURVIVAL_STAT_KEYS) Object.freeze(character.stats[key]);
-      Object.freeze(character.stats);
-      Object.freeze(character);
-    }
-    for (const item of household.inventory) Object.freeze(item);
-    Object.freeze(household.characters);
-    Object.freeze(household.inventory);
-    Object.freeze(household);
-  }
-  Object.freeze(state.households);
-  return Object.freeze(state);
 }

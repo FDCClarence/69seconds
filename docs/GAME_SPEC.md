@@ -204,17 +204,46 @@ At the buzzer the server derives one household per player from the frozen lootin
 
 Starting values live only in `packages/shared/src/survival-table.ts`: Health 100/100, Survival 50/100, Morale 100/100, Strength 50/100, Nutrition 100/100, Hydration 100/100, and 20 for each daily cost. They are placeholders for a first playable day, not final balance. Per-person overrides go in `NPC_SURVIVAL_OVERRIDES` in the same file, keyed by NPC catalog id; any starting value, any max, or either daily cost can be overridden from that table alone, without touching the initialization engine. The table is empty today, so every person on the roster runs on the defaults.
 
-Survival state is server-authoritative and read-only to clients. It is broadcast once as `survival:state` after the looting result and replayed verbatim to a reconnecting member. No client event carries stats, maxes, daily costs, or alive state, so none of it can be submitted.
+Survival state is server-authoritative and read-only to clients. It is broadcast as `survival:state` after the looting result, again whenever a day resolves into the next, and replayed verbatim to a reconnecting member. No client event carries stats, maxes, daily costs, or alive state, so none of it can be submitted.
 
-End Day readiness is separate mutable server state. Each player may send only an empty `survival:end-day` intent; the authenticated socket determines the household, and the current server phase, day, and deadline determine whether it is valid. Ending locks that household's remaining decisions for the day. Requests are idempotent, unfinished households are automatically ended by the server at 120 seconds, and the broadcast `survival:readiness` state reports every player's completion, the number still active, and whether all players have ended. Reaching that all-ended condition does not resolve or advance the day yet.
+End Day readiness is separate mutable server state. Each player may send only an empty `survival:end-day` intent; the authenticated socket determines the household, and the current server phase, day, and deadline determine whether it is valid. Ending locks that household's remaining decisions for the day. Requests are idempotent, unfinished households are automatically ended by the server at 120 seconds, and the broadcast `survival:readiness` state reports every player's completion, the number still active, and whether all players have ended. Reaching that all-ended condition is what resolves the day.
+
+### Feeding: food and water
+
+While a survival day is open and before that player has ended it, a player may use one item from their own household inventory on one living character in that same household. The client sends intent only — a request id, which inventory item instance, and which character — and the server decides everything else. No client submits a restored amount or a resulting stat value, and there is no field in `survival:consume` to put one in.
+
+What an item restores is data in `packages/shared/src/survival-consumable-table.ts`, keyed by loot catalog id. Anything absent from that table is not food, which is what makes a weapon, a radio, and a recruited person equally inedible without a rule naming any of them:
+
+| Item | Catalog id | Effect |
+| --- | --- | --- |
+| Canned Soup | `canned-soup` | +50 Nutrition |
+| Bottled Water | `bottled-water` | +50 Hydration |
+| Microwave Meal | `microwave-meal` | Nutrition and Hydration to that character's own maximums |
+
+Restoration is always capped at that character's personal max, never at 100: Nutrition 70/100 plus soup is 100/100, 20/80 plus soup is 70/80, and Hydration 40/130 plus water is 90/130. A meal on Nutrition 30/80 and Hydration 50/130 leaves 80/80 and 130/130, because "full" means full for that character.
+
+A committed feed removes exactly one unit — the named instance, not every copy — from that player's authoritative inventory, and the whole room receives the new `survival:state`. Recruited people are characters rather than inventory, so no request can consume one.
+
+The server rejects a request, spending nothing and changing nothing, when the room is not in an open `SURVIVAL` day, that player has already ended their day, the item is not in that player's inventory, the item is not a supported consumable, the target character is not in that player's household, the target is dead, or the payload is malformed. Requests are idempotent by request id: a duplicate delivery replays the original decision — even a day later, and even after that household has ended its day — and never opens a second tin. A rejection is not remembered, so a legitimate retry is judged on fresh state.
 
 ### Day numbering and the day transition
 
-The grocery run happens **before Day 1**, so the day the buzzer opens is Day 1. `dayNumber` is carried on the survival state, the server owns it, and it starts at `SURVIVAL.firstDayNumber`. Clients render the number they are given and never derive, increment, or report one — no client event carries a day. Advancing to Day 2 is not implemented; the number is a server field and an initializer parameter so the coming end-of-day flow can open the next day through the same call.
+The grocery run happens **before Day 1**, so the day the buzzer opens is Day 1. `dayNumber` is carried on the survival state, the server owns it, and it starts at `SURVIVAL.firstDayNumber`. Clients render the number they are given and never derive, increment, or report one — no client event carries a day. Only end-of-day resolution advances it, one whole day at a time.
 
 On genuinely entering a new day, a client fades to black, shows `Day #X` from the authoritative number, holds for about two seconds in total, then fades away to reveal the survival screen. The overlay is presentational: the server's 120-second day is already running behind it, the transition neither pauses nor extends the deadline, and nothing is sent to the server when the animation finishes. A remount or reconnect during the same day finishes only the time left rather than replaying the fade, remembered in a client-only session note that is never authoritative. Reduced-motion players see the overlay and its text without the fade.
 
-Not implemented yet, and deliberately out of scope for the current model: feeding, item consumption, end-of-day resource drain (Nutrition and Hydration falling by their daily costs), the death rolls that follow (combined Nutrition + Hydration below 30 gives a 50% death chance the next day; below 10 is certain death), advancing past Day 1, and events.
+### End-of-day resolution
+
+A survival day is resolved when every household has ended it — because they all pressed End Day, or because the 120-second deadline ended it for whoever had not. The server resolves each day exactly once, on its own tick; an End Day request never resolves a day itself, even the last one to arrive.
+
+Resolution does two things and nothing else:
+
+- **Resource drain.** Every living character loses its own Daily Nutrition Cost from Nutrition and its own Daily Hydration Cost from Hydration. Both are clamped at 0 — a character never carries a negative resource, and never a debt a later feed would silently pay off. Characters may have different daily costs, so two members of one household can drain by different amounts. The dead are not drained, and their remaining stats cross the day boundary untouched. Health, Survival, Morale, and Strength are not touched by the passage of a day.
+- **The next day.** `dayNumber` increments by one, a fresh authoritative 120-second deadline is established, End Day readiness resets so every household is active again, and the phase stays `SURVIVAL`. The next day opens at the earlier of the resolving moment and the closed day's deadline: finishing early starts the next day early, and a late server tick can never stretch a day past its own deadline. Households carry their characters, recruits, deposited inventory, and every stat value across the boundary — a new day is the previous day resolved, never a re-initialized one.
+
+Nobody dies of resolution. The drained values are simply left standing as the authoritative numbers the coming death rules read, and the client's `Day #X` transition plays for the newly incremented day off the state it is sent.
+
+Not implemented yet, and deliberately out of scope for the current model: the death rolls that read the drained values (combined Nutrition + Hydration below 30 gives a 50% death chance the next day; below 10 is certain death), and events.
 
 ## Timing and tally
 

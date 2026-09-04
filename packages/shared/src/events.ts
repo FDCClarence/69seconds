@@ -19,6 +19,8 @@ import type {
   ShoveLanded,
   ShoveResult,
   SurvivalState,
+  SurvivalConsumeRequest,
+  SurvivalConsumeResult,
   SurvivalEndDayRequest,
   SurvivalEndDayResult,
   SurvivalReadinessState,
@@ -34,6 +36,7 @@ export const CLIENT_EVENTS = {
   INTERACT: 'interaction:request',
   SHOVE: 'shove:request',
   END_DAY: 'survival:end-day',
+  CONSUME: 'survival:consume',
 } as const;
 
 export const SERVER_EVENTS = {
@@ -61,6 +64,15 @@ export interface ClientToServerEvents {
   'survival:end-day': (
     request: SurvivalEndDayRequest,
     acknowledge: (result: SurvivalEndDayResult) => void,
+  ) => void;
+  /**
+   * Feeding intent only — one owned item, one owned character. The server reads
+   * what the item restores and what the character can hold; nothing about the
+   * result travels in this direction.
+   */
+  'survival:consume': (
+    request: SurvivalConsumeRequest,
+    acknowledge: (result: SurvivalConsumeResult) => void,
   ) => void;
 }
 

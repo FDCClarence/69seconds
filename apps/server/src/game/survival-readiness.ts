@@ -62,8 +62,23 @@ export class SurvivalReadinessAuthority {
   }
 
   canPerformDayActions(playerId: string, serverNowMs: number): boolean {
+    return this.dayActionStatus(playerId, serverNowMs) === 'OPEN';
+  }
+
+  /**
+   * Why a household may or may not act right now. `canPerformDayActions` is the
+   * yes/no view of this; a handler that owes the player a reason reads the
+   * status instead, so "you already ended your day" and "the day is over" stay
+   * two different answers rather than one shared false.
+   */
+  dayActionStatus(
+    playerId: string,
+    serverNowMs: number,
+  ): 'OPEN' | 'ALREADY_ENDED' | 'DAY_CLOSED' | 'NOT_A_HOUSEHOLD' {
     const player = this.players.get(playerId);
-    return player?.hasEnded === false && serverNowMs < this.endsAtMs();
+    if (!player) return 'NOT_A_HOUSEHOLD';
+    if (player.hasEnded) return 'ALREADY_ENDED';
+    return serverNowMs < this.endsAtMs() ? 'OPEN' : 'DAY_CLOSED';
   }
 
   endManually(playerId: string, serverNowMs: number): ReadinessMutation {

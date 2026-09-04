@@ -48,6 +48,21 @@ function command(
   });
 }
 
+/** Resolves on the first `survival:readiness` broadcast the predicate accepts. */
+function nextSurvivalReadiness(
+  socket: TestClient,
+  matches: (state: SurvivalReadinessState) => boolean,
+): Promise<SurvivalReadinessState> {
+  return new Promise((resolve) => {
+    const listener = (state: SurvivalReadinessState) => {
+      if (!matches(state)) return;
+      socket.off('survival:readiness', listener);
+      resolve(state);
+    };
+    socket.on('survival:readiness', listener);
+  });
+}
+
 function endDay(socket: TestClient, payload: Record<string, unknown> = {}): Promise<SurvivalEndDayResult> {
   return new Promise((resolve) => {
     (socket.emit as unknown as (
@@ -495,15 +510,29 @@ describe('authenticated Socket.IO room lifecycle', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(changedBroadcasts).toBe(1);
 
+    // Both households finish half a minute into a 120-second day, so the day
+    // they end is resolved early rather than at its deadline.
+    const endedAtMs = initial.startedAtMs + 30_000;
+    serverNowMs = endedAtMs;
+    const nextDay = nextSurvivalReadiness(second, (state) => state.dayNumber === initial.dayNumber + 1);
     const allEnded = await endDay(second);
     expect(allEnded).toMatchObject({
       ok: true,
       readiness: { activePlayerCount: 0, allPlayersEnded: true },
     });
     expect(serverNowMs).toBeLessThan(initial.endsAtMs);
+    // Nothing but the server's own tick opens the next day, and it opens where
+    // the last household ended rather than where the deadline was.
+    expect(await nextDay).toMatchObject({
+      dayNumber: initial.dayNumber + 1,
+      startedAtMs: endedAtMs,
+      endsAtMs: endedAtMs + GAME.survivalDurationMs,
+      activePlayerCount: 2,
+      allPlayersEnded: false,
+    });
   });
 
-  it('auto-ends a survival day from the server clock without a client timeout event', async () => {
+  it('resolves a timed-out survival day from the server clock alone', async () => {
     const host = await connect(0);
     const created = await command(host, 'room:create', {});
     if (!created.ok || !created.room) throw new Error('Expected room creation success');
@@ -516,21 +545,51 @@ describe('authenticated Socket.IO room lifecycle', () => {
     const initialReadiness = new Promise<SurvivalReadinessState>((resolve) => {
       host.once('survival:readiness', resolve);
     });
+    const firstHouseholds = new Promise<SurvivalState>((resolve) => {
+      host.once('survival:state', resolve);
+    });
     serverNowMs = looting.phaseEndsAtMs!;
     const initial = await initialReadiness;
-    const timedOut = new Promise<SurvivalReadinessState>((resolve) => {
-      const listener = (state: SurvivalReadinessState) => {
-        if (!state.allPlayersEnded) return;
-        host.off('survival:readiness', listener);
+    const dayOne = await firstHouseholds;
+    expect(dayOne.dayNumber).toBe(SURVIVAL.firstDayNumber);
+
+    // The client sends nothing at all from here on: this household never ends
+    // its day, so only the server's 120-second deadline can close it.
+    const nextReadiness = nextSurvivalReadiness(host, (state) => state.dayNumber === dayOne.dayNumber + 1);
+    const nextHouseholds = new Promise<SurvivalState>((resolve) => {
+      const listener = (state: SurvivalState) => {
+        if (state.dayNumber !== dayOne.dayNumber + 1) return;
+        host.off('survival:state', listener);
         resolve(state);
       };
-      host.on('survival:readiness', listener);
+      host.on('survival:state', listener);
     });
     serverNowMs = initial.endsAtMs;
-    expect(await timedOut).toMatchObject({
-      activePlayerCount: 0,
-      allPlayersEnded: true,
-      players: [{ hasEnded: true, endedAtMs: initial.endsAtMs, endedBy: 'TIMEOUT' }],
+
+    // Every household is active again on a fresh day measured from the closed
+    // day's authoritative deadline, with nobody carrying an ended day into it.
+    expect(await nextReadiness).toMatchObject({
+      dayNumber: SURVIVAL.firstDayNumber + 1,
+      startedAtMs: initial.endsAtMs,
+      endsAtMs: initial.endsAtMs + GAME.survivalDurationMs,
+      activePlayerCount: 1,
+      allPlayersEnded: false,
+      players: [{ hasEnded: false, endedAtMs: null, endedBy: null }],
     });
+
+    // The day that expired charged every character its own daily costs once,
+    // and the drained numbers are what the clients are told to render.
+    const resolved = await nextHouseholds;
+    expect(resolved.stateId).toBe(dayOne.stateId);
+    expect(resolved.startedAtMs).toBe(initial.endsAtMs);
+    for (const [index, character] of resolved.households[0]!.characters.entries()) {
+      const before = dayOne.households[0]!.characters[index]!;
+      expect(character.stats.nutrition.current)
+        .toBe(before.stats.nutrition.current - character.dailyNutritionCost);
+      expect(character.stats.hydration.current)
+        .toBe(before.stats.hydration.current - character.dailyHydrationCost);
+      expect(character.dailyNutritionCost).toBe(SURVIVAL_CHARACTER_DEFAULTS.dailyNutritionCost);
+      expect(character.isAlive).toBe(true);
+    }
   });
 });
