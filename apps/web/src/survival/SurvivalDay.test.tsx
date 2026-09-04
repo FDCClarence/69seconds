@@ -176,6 +176,48 @@ describe('survival day screen', () => {
     expect(screen.getByText(/1 of 2 households ended/)).toBeTruthy();
   });
 
+  it('shows one house per household, dimmed once the server says that household ended', () => {
+    const { container } = renderDay({
+      state: survivalState({
+        households: [
+          survivalState().households[0]!,
+          { playerId: RIVAL_ID, displayName: 'rival_raider', slot: 1, characters: [], inventory: [] },
+        ],
+      }),
+      readiness: readinessState({
+        players: [
+          { playerId: user.id, hasEnded: false, endedAtMs: null, endedBy: null },
+          { playerId: RIVAL_ID, hasEnded: true, endedAtMs: DAY_STARTED_AT_MS + 5_000, endedBy: 'MANUAL' },
+        ],
+        activePlayerCount: 1,
+      }),
+    });
+
+    // One house per household in the server's readiness list, in its order.
+    const houses = [...container.querySelectorAll('.survival-house-marker')];
+    expect(houses.map((house) => house.textContent)).toEqual([
+      'cart_goblin (you)· still deciding',
+      'rival_raider· day ended',
+    ]);
+    // Dimming is the signal, and it belongs to the household the server ended.
+    expect(houses.map((house) => house.classList.contains('is-ended'))).toEqual([false, true]);
+    expect(houses[0]!.querySelector('.survival-house-glyph')).toBeTruthy();
+  });
+
+  it('dims every house once every household has ended the day', () => {
+    const { container } = renderDay({
+      readiness: readinessState({
+        players: [{ playerId: user.id, hasEnded: true, endedAtMs: DAY_STARTED_AT_MS + 1_000, endedBy: 'MANUAL' }],
+        activePlayerCount: 0,
+        allPlayersEnded: true,
+      }),
+    });
+
+    const houses = [...container.querySelectorAll('.survival-house-marker')];
+    expect(houses).toHaveLength(1);
+    expect(houses[0]!.classList.contains('is-ended')).toBe(true);
+  });
+
   it('shows each character’s authoritative resources and their own daily costs', () => {
     renderDay();
 
@@ -353,6 +395,122 @@ describe('survival day screen', () => {
     // The only living character is the fallback selection, so a feed targets them.
     await userEvent.click(screen.getByRole('button', { name: 'Feed Canned Soup to Gort' }));
     expect(vi.mocked(roomClient.consumeItem!).mock.calls[0]![0].characterId).toBe(recruit.id);
+  });
+
+  it('warns with the odds the server will roll, on what the day will leave behind', () => {
+    renderDay();
+
+    // Gort ends the day on 10 food and 0 water once their own 30/20 is spent,
+    // which is the shared table's 50% band — the same number the server rolls.
+    expect(screen.getByText(/50% chance of dying tonight/)).toBeTruthy();
+    // The main character ends it on 80 and 80 and is warned about at all.
+    expect(screen.getAllByText(/chance of dying tonight/).length).toBe(1);
+  });
+
+  it('reads each band from the shared rule rather than a threshold of its own', () => {
+    // Each pair is what the character holds now; the day's 20 and 20 come off
+    // before the band is read, so 40 + 20 lands them exactly on safe.
+    const cases = [[10, 10, '99%'], [25, 20, '80%'], [30, 20, '50%'], [40, 20, null]] as const;
+    for (const [nutrition, hydration, odds] of cases) {
+      const { unmount } = renderDay({
+        state: survivalState({
+          households: [{
+            ...survivalState().households[0]!,
+            characters: [character({
+              stats: {
+                ...SURVIVAL_CHARACTER_DEFAULTS.stats,
+                nutrition: { current: nutrition, max: 100 },
+                hydration: { current: hydration, max: 100 },
+              },
+            })],
+          }],
+        }),
+      });
+      if (odds === null) expect(screen.queryByText(/chance of dying tonight/)).toBeNull();
+      else expect(screen.getByText(new RegExp(`${odds} chance of dying tonight`))).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it('never warns about a character who is already dead', () => {
+    renderDay({
+      state: survivalState({
+        households: [{
+          ...survivalState().households[0]!,
+          // Empty and dead: the worst numbers there are, and no risk left to
+          // warn about, because the night no longer rolls for them.
+          characters: [character({
+            isAlive: false,
+            stats: {
+              ...SURVIVAL_CHARACTER_DEFAULTS.stats,
+              nutrition: { current: 0, max: 100 },
+              hydration: { current: 0, max: 100 },
+            },
+          })],
+        }],
+      }),
+    });
+
+    expect(screen.queryByText(/chance of dying tonight/)).toBeNull();
+  });
+
+  it('reports who did not survive the night when the server opens the next day', async () => {
+    const { roomClient, rerender } = renderDay();
+    expect(screen.queryByText(/did not survive the night/)).toBeNull();
+
+    const nextDayStartedAtMs = DAY_ENDS_AT_MS;
+    const nextDay = (dayNumber: number) => <SurvivalDay
+      room={room({ serverTimeMs: nextDayStartedAtMs, phaseEndsAtMs: nextDayStartedAtMs + GAME.survivalDurationMs })}
+      state={survivalState({
+        dayNumber,
+        startedAtMs: nextDayStartedAtMs,
+        households: [{
+          ...survivalState().households[0]!,
+          // The server's own committed outcome: Gort lost the 50% roll.
+          characters: [character(), { ...recruit, isAlive: false }],
+        }],
+      })}
+      readiness={readinessState({
+        dayNumber,
+        startedAtMs: nextDayStartedAtMs,
+        endsAtMs: nextDayStartedAtMs + GAME.survivalDurationMs,
+      })}
+      user={user}
+      connection="CONNECTED"
+      roomClient={roomClient}
+      onLeave={vi.fn()}
+    />;
+    rerender(nextDay(2));
+
+    expect(await screen.findByText('Gort did not survive the night.')).toBeTruthy();
+    // Death is read off the committed households, so the card agrees with it.
+    expect(screen.getByRole('radio', { name: 'Gort' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.queryByText(/chance of dying tonight/)).toBeNull();
+  });
+
+  it('does not read a death out of a broadcast that did not advance the day', async () => {
+    const { roomClient, rerender } = renderDay();
+
+    // The same day, re-broadcast with a dead recruit. Nobody died overnight
+    // here, because no night happened: only a day boundary can kill.
+    rerender(<SurvivalDay
+      room={room()}
+      state={survivalState({
+        stateId: 'survival:ABC234:70000:again',
+        households: [{
+          ...survivalState().households[0]!,
+          characters: [character(), { ...recruit, isAlive: false }],
+        }],
+      })}
+      readiness={readinessState()}
+      user={user}
+      connection="CONNECTED"
+      roomClient={roomClient}
+      onLeave={vi.fn()}
+    />);
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: 'Gort' }).hasAttribute('disabled')).toBe(true));
+    expect(screen.queryByText(/did not survive the night/)).toBeNull();
   });
 
   it('clears yesterday’s outcome when the server opens the next day', async () => {

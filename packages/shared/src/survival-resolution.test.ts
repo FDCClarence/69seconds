@@ -9,7 +9,7 @@ import {
   type SurvivalState,
 } from './schemas.js';
 import { initializeSurvivalState } from './survival.js';
-import { resolveSurvivalDay } from './survival-resolution.js';
+import { projectedSurvivalDeathChance, resolveSurvivalDay } from './survival-resolution.js';
 import { SURVIVAL_CHARACTER_DEFAULTS, type SurvivalStatKey } from './survival-table.js';
 
 const DAY_OPENED_AT_MS = 71_000;
@@ -98,7 +98,9 @@ describe('resolveSurvivalDay', () => {
         stats: stats({ nutrition: { current: 5, max: 100 }, hydration: { current: 0, max: 100 } }),
       })],
     }]);
-    const next = resolveSurvivalDay({ state: day, resolvedAtMs: DAY_DEADLINE_MS });
+    // A roll of 1 is under no chance, so this stays a test about the clamp
+    // rather than a test about the death it would otherwise trigger.
+    const next = resolveSurvivalDay({ state: day, resolvedAtMs: DAY_DEADLINE_MS, random: () => 1 });
 
     expect(next.households[0]?.characters[0]?.stats).toMatchObject({
       nutrition: { current: 0, max: 100 },
@@ -141,14 +143,17 @@ describe('resolveSurvivalDay', () => {
     expect(next.households[0]?.characters[1]).toEqual(dead);
   });
 
-  it('leaves the four stats a day does not touch, and kills nobody', () => {
+  it('leaves the four stats a day does not touch, even on the night it kills', () => {
     const day = openDay([{
       playerId: 'player-0',
       characters: [character('player-0', {
         stats: stats({ nutrition: { current: 10, max: 100 }, hydration: { current: 10, max: 100 } }),
       })],
     }]);
-    const next = resolveSurvivalDay({ state: day, resolvedAtMs: DAY_DEADLINE_MS });
+    // Combined resources land at 0, which is the worst band there is, and the
+    // roll takes it. Dying still moves none of the other four stats: death is a
+    // flag on the character, not damage applied to them.
+    const next = resolveSurvivalDay({ state: day, resolvedAtMs: DAY_DEADLINE_MS, random: () => 0 });
     const resolved = next.households[0]!.characters[0]!;
 
     expect(resolved.stats).toMatchObject({
@@ -157,10 +162,8 @@ describe('resolveSurvivalDay', () => {
       morale: SURVIVAL_CHARACTER_DEFAULTS.stats.morale,
       strength: SURVIVAL_CHARACTER_DEFAULTS.stats.strength,
     });
-    // Combined nutrition + hydration is 0 here, which the coming death rules
-    // read. Resolution itself never kills: it only leaves the numbers standing.
     expect(resolved.stats.nutrition.current + resolved.stats.hydration.current).toBe(0);
-    expect(resolved.isAlive).toBe(true);
+    expect(resolved.isAlive).toBe(false);
   });
 
   it('carries every household, character, and deposited item into the new day', () => {
@@ -224,5 +227,160 @@ describe('resolveSurvivalDay', () => {
       .toBe(DAY_OPENED_AT_MS);
     expect(resolveSurvivalDay({ state: day, resolvedAtMs: DAY_DEADLINE_MS }).startedAtMs)
       .toBe(DAY_DEADLINE_MS);
+  });
+});
+
+describe('overnight death rolls', () => {
+  /** A character who will be at `nutrition`/`hydration` once the day is paid. */
+  function endingAt(id: string, nutrition: number, hydration: number): SurvivalCharacter {
+    const cost = SURVIVAL_CHARACTER_DEFAULTS.dailyNutritionCost;
+    return character(id, {
+      stats: stats({
+        nutrition: { current: nutrition + cost, max: 100 },
+        hydration: { current: hydration + cost, max: 100 },
+      }),
+    });
+  }
+
+  function resolveWith(
+    characters: readonly SurvivalCharacter[],
+    random: () => number,
+  ): readonly SurvivalCharacter[] {
+    const day = openDay([{ playerId: 'player-0', characters }]);
+    return resolveSurvivalDay({ state: day, resolvedAtMs: DAY_DEADLINE_MS, random })
+      .households[0]!.characters;
+  }
+
+  it('kills on a roll under the band chance and spares one on the chance itself', () => {
+    // Ends the day on 10 + 0, which is under 20 but not under 10: a 50% night.
+    const atRisk = [endingAt('player-0', 10, 0)];
+
+    expect(resolveWith(atRisk, () => 0.49)[0]?.isAlive).toBe(false);
+    // `random()` is in [0, 1), so the comparison is strict and 0.5 survives —
+    // which is what makes a 50% chance 50% rather than a hair more.
+    expect(resolveWith(atRisk, () => 0.5)[0]?.isAlive).toBe(true);
+  });
+
+  it('uses the odds the balance table publishes for each band', () => {
+    const bands: readonly [SurvivalCharacter, number][] = [
+      [endingAt('player-0', 0, 0), 0.99],
+      [endingAt('player-0', 5, 4), 0.8],
+      [endingAt('player-0', 10, 9), 0.5],
+      [endingAt('player-0', 10, 10), 0],
+    ];
+    for (const [member, chance] of bands) {
+      expect(projectedSurvivalDeathChance(member)).toBe(chance);
+      // The published chance is exactly the threshold the roll is compared
+      // against: a hair under it kills, the chance itself does not.
+      expect(resolveWith([member], () => Math.max(0, chance - 0.001))[0]?.isAlive).toBe(chance === 0);
+      expect(resolveWith([member], () => chance)[0]?.isAlive).toBe(true);
+    }
+  });
+
+  it('reads the band from what the day cost, not from what the character had', () => {
+    // Starts the day full and still ends it on 5 + 5, because this character
+    // burns 95 of each: the night judges the resources they are left holding.
+    const hungry = character('player-0', {
+      dailyNutritionCost: 95,
+      dailyHydrationCost: 95,
+      stats: stats({ nutrition: { current: 100, max: 100 }, hydration: { current: 100, max: 100 } }),
+    });
+
+    expect(projectedSurvivalDeathChance(hungry)).toBe(0.5);
+    expect(resolveWith([hungry], () => 0.4)[0]?.isAlive).toBe(false);
+  });
+
+  it('does not roll for a household the day leaves in no danger', () => {
+    const fed = [character('player-0'), character('npc-1', { kind: 'NPC', catalogId: 'bryne' })];
+    // Drawing at all for a safe character would be the bug: a night nobody is
+    // at risk in has no random outcome to reach for.
+    const next = resolveWith(fed, () => { throw new Error('rolled for a safe household'); });
+
+    expect(next.every((member) => member.isAlive)).toBe(true);
+  });
+
+  it('draws once per at-risk character, in roster order, skipping the safe', () => {
+    const rolls = [0.9, 0.1];
+    const roster = [
+      // 50% and spared by 0.9.
+      endingAt('player-0', 15, 0),
+      // Safe, and takes no draw — which is what lines the next roll up with Mim.
+      character('npc-safe', { kind: 'NPC', catalogId: 'bryne' }),
+      // 80% and taken by 0.1.
+      endingAt('npc-mim', 4, 0),
+    ];
+    const next = resolveWith(roster, () => rolls.shift()!);
+
+    expect(next.map((member) => member.isAlive)).toEqual([true, true, false]);
+    expect(rolls).toHaveLength(0);
+  });
+
+  it('rolls each household separately, in slot order', () => {
+    // Both are empty, so both face 99%: the first is the one in a hundred who
+    // wakes up, the second is not.
+    const rolls = [0.995, 0.1];
+    const day = openDay([
+      { playerId: 'player-0', characters: [endingAt('player-0', 0, 0)] },
+      { playerId: 'player-1', characters: [endingAt('player-1', 0, 0)] },
+    ]);
+    const next = resolveSurvivalDay({
+      state: day,
+      resolvedAtMs: DAY_DEADLINE_MS,
+      random: () => rolls.shift()!,
+    });
+
+    expect(next.households.map((house) => house.characters[0]?.isAlive)).toEqual([true, false]);
+  });
+
+  it('never rolls the dead a second time', () => {
+    const dead = character('npc-1', {
+      kind: 'NPC',
+      catalogId: 'bryne',
+      isAlive: false,
+      stats: stats({ nutrition: { current: 0, max: 100 }, hydration: { current: 0, max: 100 } }),
+    });
+    // Empty and dead: the worst band there is, and still no draw for them.
+    expect(projectedSurvivalDeathChance(dead)).toBe(0);
+
+    const next = resolveWith(
+      [character('player-0'), dead],
+      () => { throw new Error('rolled for a corpse'); },
+    );
+    expect(next[1]).toEqual(dead);
+  });
+
+  it('kills without touching anything else the new day carries', () => {
+    const day = openDay([{
+      playerId: 'player-0',
+      characters: [endingAt('player-0', 0, 0), character('npc-1', { kind: 'NPC', catalogId: 'bryne' })],
+    }]);
+    const next = resolveSurvivalDay({ state: day, resolvedAtMs: DAY_DEADLINE_MS, random: () => 0 });
+    const killed = next.households[0]!.characters[0]!;
+
+    expect(killed.isAlive).toBe(false);
+    expect(killed.dailyNutritionCost).toBe(SURVIVAL_CHARACTER_DEFAULTS.dailyNutritionCost);
+    // A death is one flag on one character: the day still advances, the rest of
+    // the household is untouched, and the result is frozen like any other.
+    expect(next.dayNumber).toBe(SURVIVAL.firstDayNumber + 1);
+    expect(next.households[0]?.characters[1]?.isAlive).toBe(true);
+    expect(Object.isFrozen(killed)).toBe(true);
+    expect(day.households[0]?.characters[0]?.isAlive).toBe(true);
+  });
+
+  it('defaults to Math.random when the caller supplies no source', () => {
+    const day = openDay([{ playerId: 'player-0', characters: [endingAt('player-0', 0, 0)] }]);
+    const rolls = [0.5, 0.999];
+    const original = Math.random;
+    Math.random = () => rolls.shift()!;
+    try {
+      // 99% odds: the first roll takes them, the second is one of the 1% who
+      // wake up. Both go through the same default the server relies on.
+      expect(resolveSurvivalDay({ state: day, resolvedAtMs: DAY_DEADLINE_MS })
+        .households[0]?.characters[0]?.isAlive).toBe(false);
+      expect(resolveSurvivalDay({ state: day, resolvedAtMs: DAY_DEADLINE_MS })
+        .households[0]?.characters[0]?.isAlive).toBe(true);
+    } finally {
+      Math.random = original;
+    }
   });
 });

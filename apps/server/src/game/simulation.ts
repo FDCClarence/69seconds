@@ -23,6 +23,7 @@ import {
   type RoomPublicState,
   type ShoveRequest,
   type SprintState,
+  type RandomSource,
   type SurvivalConsumeRequest,
   type SurvivalState,
   type SurvivalReadinessState,
@@ -84,6 +85,15 @@ export interface SimulationTickResult {
   survivalDayAdvanced: boolean;
 }
 
+export interface SurvivalDayOptions {
+  /**
+   * The source of the overnight death rolls, handed to the shared resolution
+   * engine. Defaults to `Math.random`; a test passes a seeded or scripted one
+   * so a night's outcome is a fact rather than a coin flip.
+   */
+  random?: RandomSource;
+}
+
 export type EndSurvivalDayResolution =
   | { accepted: true; changed: boolean; state: SurvivalReadinessState }
   | { accepted: false; reason: 'INVALID_PHASE' | 'NOT_ACTIVE_HOUSEHOLD' };
@@ -124,6 +134,12 @@ export class AuthoritativeRoomSimulation {
   private readiness: SurvivalReadinessAuthority | null = null;
   /** Owns the committed feeding ledger, which outlives any single day. */
   private readonly consumption = new SurvivalConsumptionAuthority();
+  /**
+   * The room's source of overnight death rolls. Held here rather than passed
+   * per call so one room draws from one stream for the whole match, which is
+   * what makes a seeded room reproducible night after night.
+   */
+  private readonly survivalRandom: RandomSource;
   private snapshotSequence = 0;
   private snapshotAccumulatorSeconds = 0;
 
@@ -131,7 +147,9 @@ export class AuthoritativeRoomSimulation {
     room: RoomPublicState,
     lootOptions: LootAuthorityOptions = {},
     shoveOptions: ShoveAuthorityOptions = {},
+    survivalOptions: SurvivalDayOptions = {},
   ) {
+    this.survivalRandom = survivalOptions.random ?? Math.random;
     this.roomCode = room.code;
     this.phase = room.phase;
     this.phaseEndsAtMs = room.phaseEndsAtMs;
@@ -375,10 +393,10 @@ export class AuthoritativeRoomSimulation {
    * every household finished with it — whether they all pressed End Day or the
    * 120-second deadline ended it for the stragglers.
    *
-   * Resolution is one atomic step: the day's resource drain, the incremented
-   * day number, a fresh authoritative window, and readiness reset for everybody
-   * all land together, so no client ever observes a day that is over but
-   * unresolved. The phase deliberately stays `SURVIVAL` — the next day is the
+   * Resolution is one atomic step: the day's resource drain, the overnight death
+   * rolls it leaves the household facing, the incremented day number, a fresh
+   * authoritative window, and readiness reset for everybody all land together,
+   * so no client ever observes a day that is over but unresolved. The phase deliberately stays `SURVIVAL` — the next day is the
    * same phase, freshly opened, not a new one.
    *
    * Returns true only when it actually advanced the day.
@@ -401,6 +419,10 @@ export class AuthoritativeRoomSimulation {
     this.committedSurvivalState = resolveSurvivalDay({
       state: this.committedSurvivalState,
       resolvedAtMs,
+      // Who starved to death last night is decided here, once, by the server —
+      // the same call that spends the day's costs, so no client ever sees the
+      // drained numbers without the deaths they caused.
+      random: this.survivalRandom,
     });
     // The engine owns the increment; the room follows its state rather than
     // counting a day of its own, so the two can never disagree.

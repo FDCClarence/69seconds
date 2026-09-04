@@ -199,8 +199,8 @@ export const survivalCharacterKindSchema = z.enum(['MAIN', 'NPC']);
  * representation, differing only in `kind` and in whether a catalog entry backs
  * them, so no rule downstream needs two code paths to feed or kill somebody.
  *
- * `isAlive` is explicit rather than derived from health, because the coming
- * death rules kill on combined nutrition and hydration rather than on damage.
+ * `isAlive` is explicit rather than derived from health, because the overnight
+ * death rule kills on combined nutrition and hydration rather than on damage.
  */
 export const survivalCharacterSchema = z.strictObject({
   /** Stable for the life of the match: the player id, or the recruited item id. */

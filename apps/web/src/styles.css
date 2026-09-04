@@ -274,7 +274,14 @@ fieldset { min-width: 0; display: flex; flex-direction: column; gap: 1rem; margi
 .survival-clock { flex: none; display: flex; flex-direction: column; align-items: end; }
 .survival-clock strong { color: var(--accent); font: 900 clamp(2rem, 5.5vw, 3.4rem)/.8 var(--mono); font-variant-numeric: tabular-nums; }
 .survival-clock span { margin-top: .5rem; color: var(--muted); font: .58rem/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; }
-.survival-readiness { padding: .55rem .75rem; border-left: 3px solid var(--cool); background: rgba(139,198,207,.07); color: var(--text); font: .72rem var(--mono); }
+.survival-readiness { display: grid; grid-template-columns: minmax(0, 1fr); gap: .45rem; padding: .55rem .75rem; border-left: 3px solid var(--cool); background: rgba(139,198,207,.07); color: var(--text); font: .72rem var(--mono); }
+.survival-houses { display: flex; flex-wrap: wrap; gap: .4rem; margin: 0; padding: 0; list-style: none; }
+.survival-house-marker { min-width: 0; display: flex; align-items: center; gap: .35rem; padding: .18rem .42rem; border: 1px solid var(--line); border-radius: .3rem; background: rgba(255,255,255,.03); color: var(--accent); font: .62rem var(--mono); transition: color 220ms ease, opacity 220ms ease; }
+.survival-house-marker.is-you { border-color: var(--line-strong); }
+/* Ended is the dim state, and dimming is the whole at-a-glance signal. */
+.survival-house-marker.is-ended { color: var(--muted); opacity: .45; }
+.survival-house-glyph { flex: none; width: 1.05rem; height: 1.05rem; }
+.survival-house-name { min-width: 0; max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .survival-loading { width: 100%; color: var(--muted); }
 
 .survival-house, .survival-inventory, .survival-others { display: grid; grid-template-columns: minmax(0, 1fr); gap: .7rem; padding: .95rem; border: 1px solid var(--line); border-radius: .5rem; background: rgba(23,28,28,.84); }
@@ -304,6 +311,11 @@ fieldset { min-width: 0; display: flex; flex-direction: column; gap: 1rem; margi
 .survival-bar i { display: block; height: 100%; background: var(--good); transition: width 180ms ease; }
 .survival-bar.is-hydration i { background: var(--cool); }
 .survival-standing { color: var(--muted); font: .6rem/1.5 var(--mono); }
+.survival-risk { color: #ffd1c5; font: .64rem/1.4 var(--mono); }
+.survival-risk b { color: var(--danger); }
+.survival-character.is-at-risk { border-color: #74483f; }
+.survival-character.is-at-risk.is-selected { border-color: #b06a52; }
+.survival-overnight { padding: .55rem .75rem; font: .72rem var(--mono); }
 
 .survival-inventory ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr)); gap: .4rem; margin: 0; padding: 0; list-style: none; }
 .survival-inventory li { min-width: 0; display: flex; align-items: center; gap: .55rem; padding: .5rem .55rem; border-left: 2px solid var(--good); background: #222827; }

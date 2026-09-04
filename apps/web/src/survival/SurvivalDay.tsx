@@ -3,9 +3,11 @@ import {
   SURVIVAL_STAT_KEYS,
   findSurvivalConsumable,
   isSurvivalConsumable,
+  projectedSurvivalDeathChance,
   type PublicUser,
   type RoomPublicState,
   type SurvivalCharacter,
+  type SurvivalHousehold,
   type SurvivalInventoryItem,
   type SurvivalReadinessState,
   type SurvivalRestoreAmount,
@@ -59,8 +61,10 @@ export interface SurvivalDayProps {
  * character's stats and daily costs, the household inventories, and who has
  * ended their day. The screen sends exactly two intents — feed this item to
  * this character, and end my day — and then renders whatever the server
- * broadcasts back. It computes no restoration, ends no day on its own, and
- * never advances the clock past the deadline the server published.
+ * broadcasts back. It computes no restoration, ends no day on its own, kills
+ * nobody, and never advances the clock past the deadline the server published.
+ * The one number it derives — tonight's death risk — comes from the same shared
+ * rule the server rolls against, so a warning cannot promise different odds.
  */
 export function SurvivalDay({
   room,
@@ -86,6 +90,8 @@ export function SurvivalDay({
     setFeedback(null);
     setBusy(false);
   }, [state?.dayNumber]);
+
+  const overnightDeaths = useOvernightDeaths(state, household);
 
   const livingCharacters = household?.characters.filter((character) => character.isAlive) ?? [];
   // Falls back to the first living character rather than holding a selection the
@@ -153,10 +159,38 @@ export function SurvivalDay({
         </div>
       </header>
 
-      {readiness && <p className="survival-readiness" aria-live="polite">
-        {endedCount} of {readiness.players.length} household{readiness.players.length === 1 ? '' : 's'} ended
-        {hasEnded ? ' · you have ended your day' : ''}
+      {overnightDeaths.length > 0 && <p className="alert survival-overnight" role="alert">
+        {formatList(overnightDeaths)} did not survive the night.
       </p>}
+
+      {readiness && <section className="survival-readiness" aria-label="Households in this day">
+        {/*
+          One house per household in the server's readiness list, in its own
+          order — which is slot order — so a player's house never moves under
+          them mid-day. Lit means that household can still act; dimmed means the
+          server has recorded their day as ended.
+        */}
+        <ul className="survival-houses">
+          {readiness.players.map((player) => {
+            const owner = state?.households.find((entry) => entry.playerId === player.playerId) ?? null;
+            const isSelf = player.playerId === user.id;
+            const name = owner?.displayName ?? (isSelf ? user.username : 'Household');
+            return <li
+              key={player.playerId}
+              className={`survival-house-marker${player.hasEnded ? ' is-ended' : ''}${isSelf ? ' is-you' : ''}`}
+            >
+              <HouseGlyph />
+              <span className="survival-house-name">{name}{isSelf ? ' (you)' : ''}</span>
+              {/* Colour alone is not the message for everyone. */}
+              <span className="sr-only">{player.hasEnded ? '· day ended' : '· still deciding'}</span>
+            </li>;
+          })}
+        </ul>
+        <p aria-live="polite">
+          {endedCount} of {readiness.players.length} household{readiness.players.length === 1 ? '' : 's'} ended
+          {hasEnded ? ' · you have ended your day' : ''}
+        </p>
+      </section>}
 
       {!household ? <div className="panel survival-loading">
         {/* Two different absences: the day has not arrived yet, or it arrived
@@ -277,12 +311,29 @@ function survivalErrorMessage(error: unknown): string {
   return 'The room connection dropped. Please try again.';
 }
 
+/**
+ * The household mark. It paints itself in `currentColor` and nothing else,
+ * because the whole signal is the colour its marker sets: lit for a household
+ * that is still deciding, dimmed once the server says their day has ended.
+ */
+function HouseGlyph() {
+  return <svg className="survival-house-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path
+      d="M12 3 21.5 11.5 18.5 11.5 18.5 20.5 14 20.5 14 15 10 15 10 20.5 5.5 20.5 5.5 11.5 2.5 11.5Z"
+      fill="currentColor"
+    />
+  </svg>;
+}
+
 function CharacterCard({ character, selected, onSelect }: {
   character: SurvivalCharacter;
   selected: boolean;
   onSelect: () => void;
 }) {
-  return <label className={`survival-character${selected ? ' is-selected' : ''}${character.isAlive ? '' : ' is-dead'}`}>
+  const risk = projectedSurvivalDeathChance(character);
+  return <label
+    className={`survival-character${selected ? ' is-selected' : ''}${character.isAlive ? '' : ' is-dead'}${risk > 0 ? ' is-at-risk' : ''}`}
+  >
     <input
       type="radio"
       name="survival-character"
@@ -317,11 +368,57 @@ function CharacterCard({ character, selected, onSelect }: {
           <small>{describeStat(character, key)} · −{dailyCost(character, key)}/day</small>
         </div>)}
       </div>
+      {risk > 0 && <p className="survival-risk">
+        {/* The server's own odds for tonight, on the resources this character
+            would be left holding — not a second guess at them. Feeding is what
+            makes this line go away. */}
+        <b>{Math.round(risk * 100)}% chance of dying tonight</b> unless they are fed today
+      </p>}
       <p className="survival-standing">
         {STANDING_STAT_KEYS.map((key) => `${STAT_LABELS[key]} ${Math.round(character.stats[key].current)}`).join(' · ')}
       </p>
     </div>
   </label>;
+}
+
+/**
+ * The names in this player's household who were alive on the previous day and
+ * are dead on this one.
+ *
+ * Derived by comparing two states the server sent rather than reported by the
+ * server: a death is already visible in the committed households, so noticing
+ * that one happened needs no extra contract. It only ever looks backwards
+ * across a day boundary, so a mid-day broadcast — a feed landing — can never
+ * be mistaken for somebody dying.
+ */
+function useOvernightDeaths(
+  state: SurvivalState | null,
+  household: SurvivalHousehold | null,
+): readonly string[] {
+  const previous = useRef<{ dayNumber: number; alive: ReadonlySet<string> } | null>(null);
+  const [deaths, setDeaths] = useState<readonly string[]>([]);
+  useEffect(() => {
+    if (!state || !household) return;
+    const last = previous.current;
+    previous.current = {
+      dayNumber: state.dayNumber,
+      alive: new Set(household.characters.filter((character) => character.isAlive).map((c) => c.id)),
+    };
+    // Nothing to compare on the first day, and nothing to recompute for a
+    // broadcast that did not advance the day.
+    if (!last || last.dayNumber >= state.dayNumber) return;
+    setDeaths(household.characters
+      .filter((character) => !character.isAlive && last.alive.has(character.id))
+      .map((character) => character.displayName));
+  }, [state, household]);
+  return deaths;
+}
+
+/** "Gort", "Gort and Bryne", "Gort, Bryne, and Mim". */
+function formatList(names: readonly string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  if (names.length === 2) return `${names[0]} and ${names[1]}`;
+  return `${names.slice(0, -1).join(', ')}, and ${names.at(-1)}`;
 }
 
 /**

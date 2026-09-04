@@ -1,6 +1,8 @@
 import { GAME } from './constants.js';
+import { combinedSurvivalResources, survivalDeathChance } from './survival-death.js';
 import { deepFreezeSurvivalState } from './survival-freeze.js';
 import { survivalStateSchema } from './schemas.js';
+import type { RandomSource } from './loot-spawn.js';
 import type { SurvivalStat } from './survival-table.js';
 import type { SurvivalCharacter, SurvivalState } from './schemas.js';
 
@@ -10,13 +12,13 @@ import type { SurvivalCharacter, SurvivalState } from './schemas.js';
  *
  * Like the initialization engine beside it, this module reads no clock, no
  * socket, and no client message. It is a pure function of the day that is
- * ending plus the one authoritative timestamp the server hands it, which is
- * what makes a resolved day reproducible from the state it resolved.
+ * ending, the one authoritative timestamp the server hands it, and the one
+ * random source the server hands it — which is what makes a resolved day
+ * reproducible from the state and the seed it resolved with.
  *
- * It resolves exactly two things today — the daily Nutrition and Hydration
- * drain, and the day number — because those are the two the next task needs to
- * be authoritative. Feeding, item consumption, the death rolls that read the
- * drained values, and random events are deliberately absent.
+ * It resolves three things: the daily Nutrition and Hydration drain, the
+ * overnight death roll against what that drain leaves standing, and the day
+ * number. Random events are deliberately absent.
  */
 
 export interface ResolveSurvivalDayOptions {
@@ -35,6 +37,15 @@ export interface ResolveSurvivalDayOptions {
    * supplies it, and nothing here reads a clock to make one up.
    */
   resolvedAtMs: number;
+  /**
+   * The source of the night's death rolls. Defaults to `Math.random`; a test or
+   * a reproduced bug report passes a seeded one instead.
+   *
+   * It is drawn from exactly once per living character who is actually at risk,
+   * in household order and then roster order, so a scripted source lines up
+   * with the characters in danger and a healthy household consumes nothing.
+   */
+  random?: RandomSource;
 }
 
 /**
@@ -43,9 +54,13 @@ export interface ResolveSurvivalDayOptions {
  * carrying their post-drain Nutrition and Hydration into an incremented
  * `dayNumber` that starts at `resolvedAtMs`.
  *
- * Nobody is killed here. Drained values are clamped at 0 and left standing as
- * the authoritative numbers, which is exactly what the coming death rules read
- * when they compare combined Nutrition + Hydration against their thresholds.
+ * The night is spent in that order, per character: the day's costs first, then
+ * one death roll against what those costs left standing. Draining first is what
+ * makes the odds honest — a character is judged on the resources they actually
+ * enter the new day with, not on the ones they spent getting there — and it is
+ * also why feeding somebody late in the day genuinely saves them.
+ *
+ * The dead are carried over untouched: they neither drain nor roll again.
  *
  * Being pure, this function drains once per call — it has no memory of days. A
  * day resolving exactly once is the caller's guarantee, and the server keeps it
@@ -54,9 +69,10 @@ export interface ResolveSurvivalDayOptions {
 export function resolveSurvivalDay(options: ResolveSurvivalDayOptions): SurvivalState {
   const { state, resolvedAtMs } = options;
   assertWithinDay(state, resolvedAtMs);
+  const random = options.random ?? Math.random;
   const households = state.households.map((household) => ({
     ...household,
-    characters: household.characters.map(drainCharacter),
+    characters: household.characters.map((character) => spendNight(character, random)),
   }));
   // Parsed rather than trusted, exactly as the opening state is: a drain that
   // produced an impossible number fails here instead of reaching a client, and
@@ -73,13 +89,43 @@ export function resolveSurvivalDay(options: ResolveSurvivalDayOptions): Survival
 }
 
 /**
+ * One character's whole night: the day's costs, then the death roll they leave
+ * them facing.
+ *
+ * The odds come from {@link projectedSurvivalDeathChance} on the character as
+ * they were, rather than from a second lookup on the drained copy, so the
+ * chance the server rolls against is provably the same number a screen can warn
+ * the player about before they end the day.
+ */
+function spendNight(character: SurvivalCharacter, random: RandomSource): SurvivalCharacter {
+  const chance = projectedSurvivalDeathChance(character);
+  const drained = drainSurvivalCharacter(character);
+  // `random()` is in [0, 1), so a chance of 0.99 kills 99% of the time and a
+  // chance of 1 would always kill. Only drawn when there is something at stake.
+  if (chance > 0 && random() < chance) return { ...drained, isAlive: false };
+  return drained;
+}
+
+/**
+ * The chance this character dies tonight if nothing more is fed to them today.
+ *
+ * Exported because it is the honest answer to "what am I risking?": it projects
+ * the day's own costs before reading the bands, which is exactly what
+ * resolution does, so a warning built on it cannot drift from the roll.
+ */
+export function projectedSurvivalDeathChance(character: SurvivalCharacter): number {
+  if (!character.isAlive) return 0;
+  return survivalDeathChance(combinedSurvivalResources(drainSurvivalCharacter(character)));
+}
+
+/**
  * Spends one day of a character's own costs.
  *
  * Costs are per character, so two people in one household drain by different
  * amounts, and only Nutrition and Hydration move — Health, Survival, Morale,
  * and Strength are untouched by the passage of a day.
  */
-function drainCharacter(character: SurvivalCharacter): SurvivalCharacter {
+export function drainSurvivalCharacter(character: SurvivalCharacter): SurvivalCharacter {
   // The dead eat and drink nothing. Their stats are carried into the new day
   // verbatim so a corpse cannot keep sinking toward a second, deeper death.
   if (!character.isAlive) return character;

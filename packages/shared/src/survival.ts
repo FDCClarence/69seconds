@@ -69,8 +69,9 @@ export function createSurvivalCharacter(options: CreateSurvivalCharacterOptions)
     displayName,
     kind,
     catalogId,
-    // Nobody starts dead, and death is never inferred from health: the coming
-    // rules kill on combined nutrition and hydration, so the flag is explicit.
+    // Nobody starts dead, and death is never inferred from health: the
+    // overnight rule kills on combined nutrition and hydration, so the flag is
+    // explicit.
     isAlive: true,
     stats,
     dailyNutritionCost: resolveDailyCost(

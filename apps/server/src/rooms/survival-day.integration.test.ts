@@ -92,10 +92,17 @@ describe('authoritative survival day rollover over Socket.IO', () => {
   let sockets: SocketServerHandle;
   let origin: string;
   let serverNowMs: number;
+  /**
+   * The overnight death roll every day in this suite is resolved with. A 1 is
+   * above every published chance, so nobody dies unless a test lowers it — the
+   * day-boundary tests stay about the boundary.
+   */
+  let survivalRoll: number;
   const clients: TestClient[] = [];
 
   beforeEach(async () => {
     serverNowMs = 1_000;
+    survivalRoll = 1;
     httpServer = createServer();
     const tokens = new Map(users.map((user, index) => [`token-${index + 1}`, user]));
     sockets = attachSocketServer(httpServer, {
@@ -109,6 +116,7 @@ describe('authoritative survival day rollover over Socket.IO', () => {
         now: () => serverNowMs,
       },
       loot: lootSeam,
+      survival: { random: () => survivalRoll },
     });
     await new Promise<void>((resolve, reject) => {
       httpServer.once('error', reject);
@@ -200,6 +208,35 @@ describe('authoritative survival day rollover over Socket.IO', () => {
     expect(nextRoom.phaseEndsAtMs).toBe(endedAtMs + GAME.survivalDurationMs);
     // The clock the client measures that deadline against travels with it.
     expect(nextRoom.serverTimeMs).toBe(endedAtMs);
+  });
+
+  it('starves an unfed room to death over the wire, on the server’s own roll', async () => {
+    // Every character in this room dies the first night they are at any risk:
+    // the roll the socket server was handed is under every published chance.
+    survivalRoll = 0;
+    const { host, second, dayOne } = await openedDay();
+
+    // Nothing was banked before the buzzer, so no household can feed anybody.
+    // 20 food and 20 water a day empties a full character after four days, and
+    // the fifth night is the one they face with nothing left.
+    let current = dayOne;
+    for (let day = 0; day < 5; day += 1) {
+      const nextDay = nextSurvivalState(second, (state) => state.dayNumber === current.dayNumber + 1);
+      serverNowMs = current.startedAtMs + 5_000;
+      await endDay(host);
+      await endDay(second);
+      current = await nextDay;
+    }
+
+    expect(current.dayNumber).toBe(dayOne.dayNumber + 5);
+    for (const household of current.households) {
+      for (const member of household.characters) {
+        expect(member.stats.nutrition.current + member.stats.hydration.current).toBe(0);
+        // The death is in the committed state both clients received, not a
+        // server-side detail: a client renders it without being told twice.
+        expect(member.isAlive).toBe(false);
+      }
+    }
   });
 
   it('opens the new day with fresh readiness for every household', async () => {

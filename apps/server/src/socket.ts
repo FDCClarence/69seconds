@@ -38,7 +38,7 @@ import type { ZodType } from 'zod';
 import { readSessionTokenFromCookieHeader, type SessionCookieConfig } from './auth/cookies.js';
 import { digestSessionToken, type AuthService } from './auth/service.js';
 import { REJECTION_MESSAGES, type LootAuthorityOptions } from './game/loot-authority.js';
-import { AuthoritativeRoomSimulation } from './game/simulation.js';
+import { AuthoritativeRoomSimulation, type SurvivalDayOptions } from './game/simulation.js';
 import { SHOVE_REJECTION_MESSAGES, type ShoveAuthorityOptions } from './game/shove-authority.js';
 import { SURVIVAL_CONSUME_REJECTION_MESSAGES } from './game/survival-consumption.js';
 import { RoomRegistry, RoomRegistryError, type RoomRegistryOptions } from './rooms/registry.js';
@@ -58,6 +58,8 @@ export interface SocketServerOptions {
   loot?: LootAuthorityOptions;
   /** Test seam for shove geometry; production uses the shared store map. */
   shove?: ShoveAuthorityOptions;
+  /** Test seam for the overnight death rolls; production uses `Math.random`. */
+  survival?: SurvivalDayOptions;
 }
 
 export interface SocketServerHandle {
@@ -494,7 +496,12 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       }
       try {
         const room = rooms.start(playerId);
-        const simulation = new AuthoritativeRoomSimulation(room, options.loot ?? {}, options.shove ?? {});
+        const simulation = new AuthoritativeRoomSimulation(
+          room,
+          options.loot ?? {},
+          options.shove ?? {},
+          options.survival ?? {},
+        );
         simulations.set(room.code, simulation);
         io.to(room.code).emit('lobby:state', room);
         io.to(room.code).emit('state:snapshot', simulation.snapshot(now()));

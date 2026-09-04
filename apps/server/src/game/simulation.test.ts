@@ -598,6 +598,66 @@ describe('AuthoritativeRoomSimulation survival phase', () => {
     });
   });
 
+  /**
+   * Runs one room forward by whole days, letting the deadline auto-end every
+   * household, and reports the combined food and water each day opened with.
+   *
+   * Nothing was banked before the buzzer, so nobody in this room can ever be
+   * fed: it is the starvation path, played out on the server's own ticks.
+   */
+  function starveForDays(days: number, random: () => number): {
+    simulation: AuthoritativeRoomSimulation;
+    combinedByDay: number[];
+  } {
+    const simulation = new AuthoritativeRoomSimulation(room(2), {}, {}, { random });
+    simulation.tick(2_000);
+    simulation.tick(lootingDeadline);
+    const combinedByDay: number[] = [];
+    for (let day = 0; day <= days; day += 1) {
+      const member = simulation.survivalState()!.households[0]!.characters[0]!;
+      combinedByDay.push(member.stats.nutrition.current + member.stats.hydration.current);
+      if (day < days) simulation.tick(lootingDeadline + (day + 1) * GAME.survivalDurationMs);
+    }
+    return { simulation, combinedByDay };
+  }
+
+  it('starves an unfed household down the bands and kills on the server’s own roll', () => {
+    // A roll of 0 is under every published chance, so this room dies the first
+    // night it is at any risk at all.
+    const { simulation, combinedByDay } = starveForDays(5, () => 0);
+
+    // 40 of each spent per day between food and water: four days of it empties
+    // a full character, and the fifth night is the one with nothing left.
+    expect(combinedByDay).toEqual([200, 160, 120, 80, 40, 0]);
+    expect(simulation.survivalDayNumber()).toBe(SURVIVAL.firstDayNumber + 5);
+    for (const household of simulation.survivalState()!.households) {
+      for (const member of household.characters) expect(member.isAlive).toBe(false);
+    }
+  });
+
+  it('spares the same household on a roll above every chance', () => {
+    // Identical days, identical numbers: the only difference is the source the
+    // room was handed, which is what proves the roll is the thing deciding.
+    const { simulation, combinedByDay } = starveForDays(5, () => 1);
+
+    expect(combinedByDay).toEqual([200, 160, 120, 80, 40, 0]);
+    for (const household of simulation.survivalState()!.households) {
+      for (const member of household.characters) expect(member.isAlive).toBe(true);
+    }
+  });
+
+  it('keeps advancing days for a household that already died', () => {
+    const { simulation } = starveForDays(5, () => 0);
+    const dead = simulation.survivalState()!;
+    const at = lootingDeadline + 6 * GAME.survivalDurationMs;
+
+    expect(simulation.tick(at)).toMatchObject({ survivalDayAdvanced: true });
+    const after = simulation.survivalState()!;
+    expect(after.dayNumber).toBe(dead.dayNumber + 1);
+    // A corpse neither drains nor rolls again: the room moves on around them.
+    expect(after.households[0]?.characters[0]).toEqual(dead.households[0]?.characters[0]);
+  });
+
   it('sets all-players-ended as soon as the last household ends before timeout', () => {
     const { simulation } = survivingSimulation();
     simulation.endSurvivalDay('player-0', lootingDeadline + 1_000);

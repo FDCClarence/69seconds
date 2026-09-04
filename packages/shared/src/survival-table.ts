@@ -118,3 +118,43 @@ export type NpcSurvivalOverrideTable = Readonly<Record<string, SurvivalCharacter
  * ```
  */
 export const NPC_SURVIVAL_OVERRIDES: NpcSurvivalOverrideTable = Object.freeze({});
+
+/**
+ * One overnight death band: the chance of dying tonight for a character whose
+ * combined Nutrition + Hydration falls **below** `combinedBelow`.
+ */
+export interface SurvivalDeathRiskBand {
+  combinedBelow: number;
+  /** Probability in 0..1. */
+  chance: number;
+}
+
+export interface SurvivalDeathRiskTable {
+  /**
+   * Nothing left at all — Nutrition and Hydration both empty. Its own entry
+   * rather than a band, because "0 combined" is an exact value while every
+   * band below is a strict range.
+   */
+  emptyChance: number;
+  /**
+   * Ordered worst-first: the first band a combined value falls under applies,
+   * and a value under none of them is not at risk at all.
+   */
+  bands: readonly SurvivalDeathRiskBand[];
+}
+
+/**
+ * THE OVERNIGHT DEATH ODDS. A character is rolled against these once per day,
+ * on the resources they are left holding after that day's costs are spent — so
+ * these read as "starve the day, risk the night".
+ *
+ * Data, like everything else in this file: the rule that reads it lives in
+ * `survival-death.ts` and hard-codes none of these numbers.
+ */
+export const SURVIVAL_DEATH_RISKS: SurvivalDeathRiskTable = Object.freeze({
+  emptyChance: 0.99,
+  bands: Object.freeze([
+    Object.freeze({ combinedBelow: 10, chance: 0.8 }),
+    Object.freeze({ combinedBelow: 20, chance: 0.5 }),
+  ]),
+});
