@@ -60,6 +60,7 @@ import {
   type LootViewItem,
 } from '../network/loot-view.js';
 import { reconcilePredictedState } from '../network/prediction.js';
+import { newRequestId } from '../../request-id.js';
 import {
   GENERATED_GROCERY_STORE_MAP,
   STORE_OBJECT_LAYER,
@@ -383,7 +384,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     const cart = fittingItem ? undefined : this.nearestReachableCart();
     const item = fittingItem ?? (cart ? undefined : nearestItem);
     const request: InteractionRequest = {
-      requestId: this.newRequestId(),
+      requestId: newRequestId(),
       action: item ? 'PICK_UP' : cart ? 'DROP_OFF' : 'INTERACT',
       ...(item ? { targetId: item.id } : cart ? { targetId: cart.id } : {}),
     };
@@ -429,7 +430,7 @@ export class GroceryStoreScene extends Phaser.Scene {
       this.showFeedback({ kind: 'NOTHING_CARRIED', message: 'Nothing to put down' });
       return;
     }
-    const request: InteractionRequest = { requestId: this.newRequestId(), action: 'DROP' };
+    const request: InteractionRequest = { requestId: newRequestId(), action: 'DROP' };
 
     this.awaitingInteraction = true;
     try {
@@ -475,7 +476,7 @@ export class GroceryStoreScene extends Phaser.Scene {
     }
     const targetPlayerId = this.nearestShovableTarget();
     const request: ShoveRequest = {
-      requestId: this.newRequestId(),
+      requestId: newRequestId(),
       ...(targetPlayerId ? { targetPlayerId } : {}),
     };
     this.playShoveSwing();
@@ -915,14 +916,6 @@ export class GroceryStoreScene extends Phaser.Scene {
       return { kind: 'DROPPED', message: `Put down ${findCarryableEntry(result.catalogId)?.label ?? 'item'}` };
     }
     return { kind: result.reason, message: result.message };
-  }
-
-  private newRequestId(): string {
-    const webCrypto = globalThis.crypto;
-    if (typeof webCrypto?.randomUUID === 'function') return webCrypto.randomUUID();
-    // Deterministic fallback for environments without Web Crypto; still unique per press.
-    const random = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
-    return `${random()}${random()}-${random()}-4${random().slice(1)}-8${random().slice(1)}-${random()}${random()}${random()}`;
   }
 
   private showFeedback(feedback: GameFeedback): void {

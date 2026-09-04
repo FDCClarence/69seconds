@@ -12,6 +12,7 @@ import {
   npcSpriteCrop,
   type MatchTally,
   type RoomPublicState,
+  type SurvivalReadinessState,
   type SurvivalState,
 } from '@69-seconds/shared';
 import { RoomClientError, type RoomClient, type RoomClientListeners } from './room-client.js';
@@ -629,6 +630,82 @@ describe('authentication application', () => {
     await screen.findByRole('heading', { name: 'Survival phase' });
     act(() => { listeners?.onSurvivalState?.(survivalState); });
     expect(document.querySelector('.day-transition')).toBeNull();
+  });
+
+  it('carries the server’s readiness into the day and sends one End Day for it', async () => {
+    forgetDayTransitions();
+    let listeners: RoomClientListeners | undefined;
+    const survivalRoom: RoomPublicState = {
+      ...lobby,
+      phase: 'SURVIVAL',
+      serverTimeMs: 70_000,
+      phaseEndsAtMs: 70_000 + GAME.survivalDurationMs,
+    };
+    const survivalState: SurvivalState = {
+      stateId: 'survival:ABC234:70000',
+      roomCode: 'ABC234',
+      dayNumber: SURVIVAL.firstDayNumber,
+      startedAtMs: 70_000,
+      households: [{
+        playerId: player.id,
+        displayName: player.username,
+        slot: 0,
+        characters: [{
+          id: player.id,
+          displayName: player.username,
+          kind: 'MAIN',
+          catalogId: null,
+          isAlive: true,
+          stats: SURVIVAL_CHARACTER_DEFAULTS.stats,
+          dailyNutritionCost: SURVIVAL_CHARACTER_DEFAULTS.dailyNutritionCost,
+          dailyHydrationCost: SURVIVAL_CHARACTER_DEFAULTS.dailyHydrationCost,
+        }],
+        inventory: [{ id: 'item-soup-1', catalogId: 'canned-soup', label: 'Canned Soup', category: 'food' }],
+      }],
+    };
+    const readiness: SurvivalReadinessState = {
+      roomCode: 'ABC234',
+      dayNumber: SURVIVAL.firstDayNumber,
+      startedAtMs: 70_000,
+      endsAtMs: 70_000 + GAME.survivalDurationMs,
+      durationMs: GAME.survivalDurationMs,
+      players: [{ playerId: player.id, hasEnded: false, endedAtMs: null, endedBy: null }],
+      activePlayerCount: 1,
+      allPlayersEnded: false,
+    };
+    const endDay = vi.fn().mockResolvedValue({ ...readiness, activePlayerCount: 0, allPlayersEnded: true });
+    const rooms = roomClientStub({
+      subscribe: vi.fn((next) => {
+        listeners = next;
+        next.onConnection('CONNECTED');
+        return () => undefined;
+      }),
+      joinRoom: vi.fn().mockResolvedValue(survivalRoom),
+      endDay,
+    });
+    renderAt('/room/ABC234', apiStub({ currentUser: vi.fn().mockResolvedValue(player) }), rooms);
+    await screen.findByRole('heading', { name: 'Survival phase' });
+
+    act(() => {
+      listeners?.onSurvivalState?.(survivalState);
+      listeners?.onSurvivalReadiness?.(readiness);
+    });
+
+    // The day's window comes from readiness, which is the only place the client
+    // is told when the server's day ends.
+    expect(screen.getByRole('timer').textContent).toBe('2:00');
+    expect(screen.getByText(/0 of 1 household ended/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'End day' }));
+    expect(endDay).toHaveBeenCalledTimes(1);
+
+    // Only the server's own broadcast closes the button down.
+    act(() => listeners?.onSurvivalReadiness?.({
+      ...readiness,
+      players: [{ playerId: player.id, hasEnded: true, endedAtMs: 71_000, endedBy: 'MANUAL' }],
+      activePlayerCount: 0,
+      allPlayersEnded: true,
+    }));
+    expect(screen.getByRole('button', { name: 'Day ended' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('destroys Phaser at TALLY, waits for the server result, and renders the immutable tally', async () => {

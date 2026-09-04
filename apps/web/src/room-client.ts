@@ -11,6 +11,7 @@ import {
   shoveLandedSchema,
   shoveResultSchema,
   survivalStateSchema,
+  survivalConsumeResultSchema,
   survivalEndDayResultSchema,
   survivalReadinessStateSchema,
   type ClientToServerEvents,
@@ -30,6 +31,8 @@ import {
   type ShoveLanded,
   type ShoveRequest,
   type ShoveResult,
+  type SurvivalConsumeRequest,
+  type SurvivalConsumeResult,
   type SurvivalState,
   type SurvivalReadinessState,
 } from '@69-seconds/shared';
@@ -68,6 +71,12 @@ export interface RoomClient {
   subscribeLootUpdates?(listener: (update: LootUpdate) => void): () => void;
   subscribeShoveLanded?(listener: (event: ShoveLanded) => void): () => void;
   endDay?(): Promise<SurvivalReadinessState>;
+  /**
+   * Feeding intent. It resolves with the server's decision — committed or
+   * rejected — rather than throwing on a rejection, because a refused feed is a
+   * gameplay answer the screen renders, not a transport failure.
+   */
+  consumeItem?(request: SurvivalConsumeRequest): Promise<SurvivalConsumeResult>;
 }
 
 export class RoomClientError extends Error {
@@ -372,6 +381,35 @@ export class SocketRoomClient implements RoomClient {
           return;
         }
         resolve(parsed.data.readiness);
+      });
+    });
+  }
+
+  /**
+   * Sends one feeding intent and returns the server's own decision. Only the
+   * item and the character travel: what the item restores, and the stat maxima
+   * it is clamped to, are the server's to read.
+   *
+   * A `REJECTED` outcome resolves rather than rejecting, so the screen can show
+   * the server's reason. Only a broken transport rejects.
+   */
+  consumeItem(request: SurvivalConsumeRequest): Promise<SurvivalConsumeResult> {
+    return new Promise((resolve, reject) => {
+      if (!this.socket.connected) {
+        reject(new RoomClientError('INTERNAL_ERROR', 'Not connected to the match server', true));
+        return;
+      }
+      const timeout = window.setTimeout(() => {
+        reject(new RoomClientError('INTERNAL_ERROR', 'The match server did not acknowledge the feed', true));
+      }, 5_000);
+      this.socket.emit('survival:consume', request, (payload: unknown) => {
+        window.clearTimeout(timeout);
+        const parsed = survivalConsumeResultSchema.safeParse(payload);
+        if (!parsed.success) {
+          reject(new RoomClientError('INVALID_PAYLOAD', 'The match server returned an invalid feed result', true));
+          return;
+        }
+        resolve(parsed.data);
       });
     });
   }

@@ -245,7 +245,14 @@ export function attachSocketServer(httpServer: HttpServer, options: SocketServer
       // Superseded movement snapshots have no value to a slow client. Volatile
       // delivery prevents latency from turning into an unbounded reliable queue.
       io.to(simulation.roomCode).volatile.emit('state:snapshot', snapshot);
-      if (result.phaseChanged) io.to(simulation.roomCode).emit('lobby:state', room);
+      // A resolved survival day replaces the room's deadline without changing
+      // its phase, so the room state is re-broadcast for the rollover too. A
+      // client that reads its day countdown from `phaseEndsAtMs` would otherwise
+      // keep yesterday's deadline for the rest of the match, since survival
+      // emits no periodic snapshot to correct it.
+      if (result.phaseChanged || result.survivalDayAdvanced) {
+        io.to(simulation.roomCode).emit('lobby:state', room);
+      }
       if (result.tallyCommitted) {
         const tally = simulation.tally();
         if (tally) io.to(simulation.roomCode).emit('match:tally', tally);

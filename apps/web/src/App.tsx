@@ -5,6 +5,7 @@ import {
   type MatchTally,
   type PublicUser,
   type RoomPublicState,
+  type SurvivalReadinessState,
   type SurvivalState,
   type TallyItem,
 } from '@69-seconds/shared';
@@ -12,7 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { authApi, ApiError, type AuthApi } from './api.js';
 import { CarryableArtById } from './carryable-art.js';
 import { MatchGame } from './game/react/MatchGame.js';
-import { DayTransition } from './survival/DayTransition.js';
+import { SurvivalDay } from './survival/SurvivalDay.js';
 import { gameAudio } from './game/audio/game-audio.js';
 import type { GroceryGameFactory } from './game/types.js';
 import {
@@ -99,6 +100,10 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
   // The server's own survival state, held as received. The day number on it is
   // the only day this client ever renders.
   const [survivalState, setSurvivalState] = useState<SurvivalState | null>(null);
+  // Readiness is tracked apart from the households because the server changes
+  // the two on different events: households only at the buzzer and at a day
+  // rollover, readiness every time somebody ends their day.
+  const [survivalReadiness, setSurvivalReadiness] = useState<SurvivalReadinessState | null>(null);
   const [connection, setConnection] = useState<SocketConnectionState>('DISCONNECTED');
 
   const navigate = useCallback((destination: Route, replace = false) => {
@@ -131,6 +136,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
     onRoom: setRoom,
     onResult: setMatchTally,
     onSurvivalState: setSurvivalState,
+    onSurvivalReadiness: setSurvivalReadiness,
     onConnection: setConnection,
     onError: (error) => {
       if (error.code === 'UNAUTHENTICATED') {
@@ -138,6 +144,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
         setRoom(null);
         setMatchTally(null);
         setSurvivalState(null);
+        setSurvivalReadiness(null);
         setAuth({ status: 'anonymous' });
         setRestoreError('Your session expired. Log in again to continue.');
         window.history.replaceState({}, '', '/');
@@ -150,6 +157,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
       setRoom(null);
       setMatchTally(null);
       setSurvivalState(null);
+      setSurvivalReadiness(null);
       window.history.replaceState({}, '', '/home');
       setRoute('/home');
       setNotice('That room closed after everyone left.');
@@ -173,6 +181,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
     setRoom(null);
     setMatchTally(null);
     setSurvivalState(null);
+    setSurvivalReadiness(null);
     await api.logout();
     setAuth({ status: 'anonymous' });
     window.history.replaceState({}, '', '/');
@@ -182,6 +191,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
   const createRoom = useCallback(async () => {
     setMatchTally(null);
     setSurvivalState(null);
+    setSurvivalReadiness(null);
     const created = await rooms.createRoom();
     setRoom(created);
     navigate(`/room/${created.code}`);
@@ -190,6 +200,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
   const joinRoom = useCallback(async (code: string) => {
     setMatchTally(null);
     setSurvivalState(null);
+    setSurvivalReadiness(null);
     const joined = await rooms.joinRoom(code);
     setRoom(joined);
     navigate(`/room/${joined.code}`);
@@ -200,6 +211,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
     setRoom(null);
     setMatchTally(null);
     setSurvivalState(null);
+    setSurvivalReadiness(null);
     navigate('/home');
   }, [navigate, rooms]);
 
@@ -223,6 +235,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
       room={room?.code === code ? room : null}
       matchTally={matchTally?.roomCode === code ? matchTally : null}
       survivalState={survivalState?.roomCode === code ? survivalState : null}
+      survivalReadiness={survivalReadiness?.roomCode === code ? survivalReadiness : null}
       user={auth.user}
       connection={connection}
       networkError={notice}
@@ -233,6 +246,7 @@ export function App({ api = authApi, roomClient: suppliedRoomClient, gameFactory
       onStart={async () => {
         setMatchTally(null);
         setSurvivalState(null);
+        setSurvivalReadiness(null);
         setRoom(await rooms.startMatch());
       }}
       onLeave={leaveRoom}
@@ -486,11 +500,12 @@ function Home({ user, notice, onLogout, onCreate, onJoin }: {
   </main>;
 }
 
-function Lobby({ code, room, matchTally, survivalState, user, connection, networkError, onDismissNetworkError, roomClient, onJoin, onReady, onStart, onLeave, onLogout, gameFactory }: {
+function Lobby({ code, room, matchTally, survivalState, survivalReadiness, user, connection, networkError, onDismissNetworkError, roomClient, onJoin, onReady, onStart, onLeave, onLogout, gameFactory }: {
   code: string;
   room: RoomPublicState | null;
   matchTally: MatchTally | null;
   survivalState: SurvivalState | null;
+  survivalReadiness: SurvivalReadinessState | null;
   user: PublicUser;
   connection: SocketConnectionState;
   networkError: string | null;
@@ -533,10 +548,17 @@ function Lobby({ code, room, matchTally, survivalState, user, connection, networ
 
   const self = room.players.find((player) => player.id === user.id);
   if (room.phase === 'SURVIVAL') {
-    // Placeholder on purpose: this proves the authoritative transition off the
-    // looting scene. The survival screen — house readiness, the frozen looting
-    // result, and the End the day button — is the next task.
-    return <SurvivalScreen survivalState={survivalState} />;
+    // The looting scene is gone by now. Everything this screen shows and every
+    // decision it offers belongs to the server's committed day.
+    return <SurvivalDay
+      room={room}
+      state={survivalState}
+      readiness={survivalReadiness}
+      user={user}
+      connection={connection}
+      roomClient={roomClient}
+      onLeave={onLeave}
+    />;
   }
   if (room.phase === 'TALLY') {
     return <TallyScreen room={room} result={matchTally} user={user} onLeave={onLeave} onLogout={onLogout} />;
@@ -607,21 +629,6 @@ function Lobby({ code, room, matchTally, survivalState, user, connection, networ
         <button className="link leave" type="button" disabled={busy} onClick={() => void act(onLeave)}>Leave room</button>
       </div>
     </div>
-  </main>;
-}
-
-function SurvivalScreen({ survivalState }: { survivalState: SurvivalState | null }) {
-  return <main className="page" aria-live="polite">
-    <div className="center">
-      <h1>Survival phase</h1>
-    </div>
-    {/*
-      The day comes from the server's survival state, so the overlay waits for
-      that state rather than announcing a day this client made up. It is purely
-      presentational: the day's server-owned deadline is already running behind
-      it and the overlay tells the server nothing when it finishes.
-    */}
-    {survivalState && <DayTransition dayNumber={survivalState.dayNumber} stateId={survivalState.stateId} />}
   </main>;
 }
 

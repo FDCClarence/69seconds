@@ -70,6 +70,11 @@ test('four isolated players complete auth, room start, reconnection, and the 69-
     for (const page of pages) {
       await expect(page.getByRole('heading', { name: 'Survival phase' })).toBeVisible({ timeout: 75_000 });
       await expect(page.getByRole('application', { name: /grocery store/i })).toBeHidden();
+      // The day is playable: every client gets the server's own countdown, its
+      // own household's resources, and the one decision the day offers.
+      await expect(page.getByRole('timer')).toBeVisible();
+      await expect(page.getByRole('meter', { name: /Nutrition$/ })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'End day' })).toBeEnabled();
     }
     expect(await narrowPage.evaluate(() => document.documentElement.scrollWidth))
       .toBeLessThanOrEqual(320);
